@@ -7,7 +7,11 @@
  *
  * Layout: tasks/{task}/reports/crew-{runId}/manifest.json
  */
-import { mkdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, existsSync, statSync } from "node:fs";
+import {
+  mkdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, rmSync,
+  existsSync, statSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 const LOCK_STALE_MS = 60_000;
@@ -38,7 +42,11 @@ function acquireLock(manifestPath) {
   for (;;) {
     try {
       mkdirSync(lock);
-      return lock;
+      // Stamp ownership: a slow holder whose lock got reclaimed as stale must
+      // not later delete the lock its successor is holding.
+      const token = `${process.pid}:${randomUUID()}`;
+      writeFileSync(join(lock, "owner"), token, "utf8");
+      return { lock, token };
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       let age = 0;
@@ -49,7 +57,7 @@ function acquireLock(manifestPath) {
       }
       if (age > LOCK_STALE_MS) {
         try {
-          rmdirSync(lock);
+          rmSync(lock, { recursive: true, force: true });
         } catch { /* another process won the cleanup race */ }
         continue;
       }
@@ -67,9 +75,15 @@ function acquireLock(manifestPath) {
   }
 }
 
-function releaseLock(lock) {
+/** Only release a lock we still own; a reclaimed lock now belongs to someone else. */
+function releaseLock(lock, token) {
   try {
-    rmdirSync(lock);
+    if (readFileSync(join(lock, "owner"), "utf8") !== token) return;
+  } catch {
+    return; // no owner stamp means the lock is not ours to remove
+  }
+  try {
+    rmSync(lock, { recursive: true, force: true });
   } catch { /* already gone */ }
 }
 
@@ -96,14 +110,20 @@ export function readManifest(manifestPath) {
 export function writeManifest(manifestPath, manifest) {
   mkdirSync(dirname(manifestPath), { recursive: true });
   const tmp = `${manifestPath}.tmp.${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  renameSync(tmp, manifestPath);
+  try {
+    writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    renameSync(tmp, manifestPath);
+  } catch (err) {
+    // A partial tmp file left in the run directory looks like run output.
+    try { rmSync(tmp, { force: true }); } catch { /* nothing to clean */ }
+    throw err;
+  }
   return manifestPath;
 }
 
 /** Read-modify-write under the lock. `mutate` receives and returns the manifest. */
 export function updateManifest(manifestPath, mutate) {
-  const lock = acquireLock(manifestPath);
+  const { lock, token } = acquireLock(manifestPath);
   try {
     const manifest = readManifest(manifestPath);
     const next = mutate(manifest) ?? manifest;
@@ -111,14 +131,37 @@ export function updateManifest(manifestPath, mutate) {
     writeManifest(manifestPath, next);
     return next;
   } finally {
-    releaseLock(lock);
+    releaseLock(lock, token);
   }
 }
+
+/**
+ * MAX_DEPTH is the second half of the recursion guard. MWG_CREW_ROLE stops a
+ * worker that reads the skill and tries to dispatch; this stops a run that got
+ * created anyway. Depth 0 is the dispatcher, depth 1 is a worker sub-run that a
+ * human deliberately asked for; deeper than that is a loop, not a plan.
+ */
+export const MAX_DEPTH = 1;
 
 export function createRun({ runDir, runId, task, workspace, depth = 0, dispatcher = "claude" }) {
   const manifestPath = join(runDir, "manifest.json");
   if (existsSync(manifestPath)) {
     throw new ManifestError(`run manifest already exists at ${manifestPath}`);
+  }
+  if (!Number.isInteger(depth) || depth < 0) {
+    throw new ManifestError(`depth must be a non-negative integer, got ${depth}`);
+  }
+  if (depth > MAX_DEPTH) {
+    throw new ManifestError(
+      `refusing to create a run at depth ${depth} (max ${MAX_DEPTH})\n` +
+      `  → a worker is dispatching workers; stop the chain instead of deepening it`,
+    );
+  }
+  if (process.env.MWG_CREW_ROLE === "worker" && depth === 0) {
+    throw new ManifestError(
+      "refusing to create a depth-0 run while MWG_CREW_ROLE=worker\n" +
+      "  → a worker cannot start its own dispatch run",
+    );
   }
   const now = new Date().toISOString();
   return {

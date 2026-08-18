@@ -26,6 +26,7 @@ import {
   assertEvidenceWritten,
   parseDuration,
   readPrompt,
+  readWorkerStatus,
   validateEvidencePath,
 } from "./crew-guards.mjs";
 
@@ -92,6 +93,7 @@ function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMo
     evidenceAbs,
     `agy conversation ${parsed.conversation_id}`,
   );
+  const verdict = readWorkerStatus(evidenceAbs);
 
   return {
     worker: "antigravity",
@@ -108,7 +110,8 @@ function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMo
     response: parsed.response.trim(),
     evidence: evidenceAbs,
     evidenceBytes,
-    status: "done",
+    status: verdict.status,
+    reportedStatus: verdict.reported,
   };
 }
 
@@ -188,6 +191,7 @@ function runApp({ promptText, workspace, evidenceAbs, model, title, timeout }) {
 
   const endedAt = new Date().toISOString();
   const evidenceBytes = assertEvidenceWritten(evidenceAbs, `app conversation ${conversationId}`);
+  const verdict = readWorkerStatus(evidenceAbs);
 
   return {
     worker: "antigravity",
@@ -199,7 +203,8 @@ function runApp({ promptText, workspace, evidenceAbs, model, title, timeout }) {
     steps: settledAt,
     evidence: evidenceAbs,
     evidenceBytes,
-    status: "done",
+    status: verdict.status,
+    reportedStatus: verdict.reported,
   };
 }
 
@@ -251,22 +256,10 @@ function parseArgv(argv) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   let opts = {};
+  let result = null;
   try {
     opts = parseArgv(process.argv.slice(2));
-    const result = antiRun(opts);
-    if (opts.manifest && opts.job) {
-      const { updateJob } = await import("./crew-manifest.mjs");
-      updateJob(opts.manifest, Number(opts.job), {
-        status: "done",
-        conversationId: result.conversationId,
-        startedAt: result.startedAt,
-        endedAt: result.endedAt,
-        agentDurationSec: result.agentDurationSec ?? null,
-        usage: result.usage ?? null,
-        evidenceBytes: result.evidenceBytes,
-      });
-    }
-    console.log(JSON.stringify(result, null, 2));
+    result = antiRun(opts);
   } catch (err) {
     // A failed job must be recorded, or collect cannot tell a job that broke
     // from one that never started -- both would read as "pending" forever.
@@ -285,4 +278,39 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(`anti-run: ${err.message}`);
     process.exit(1);
   }
+
+  // Recording the outcome is deliberately outside the try above: the job has
+  // already finished by now, so a manifest write that fails must be reported as
+  // a bookkeeping problem, never as a failed job.
+  if (opts.manifest && opts.job) {
+    try {
+      const { updateJob } = await import("./crew-manifest.mjs");
+      updateJob(opts.manifest, Number(opts.job), {
+        status: result.status,
+        reportedStatus: result.reportedStatus,
+        conversationId: result.conversationId,
+        startedAt: result.startedAt,
+        endedAt: result.endedAt,
+        agentDurationSec: result.agentDurationSec ?? null,
+        usage: result.usage ?? null,
+        evidenceBytes: result.evidenceBytes,
+      });
+    } catch (manifestErr) {
+      console.error(
+        `anti-run: job finished ${result.status} but the manifest was not updated: ${manifestErr.message}\n` +
+        `  → the evidence at ${result.evidence} is valid; re-run the manifest update, not the job`,
+      );
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(2); // distinct from 1: the job worked, the bookkeeping did not
+    }
+  }
+
+  // A worker that skipped the contract's Status line cannot be judged silently.
+  if (result.status === "done_unverified") {
+    console.error(
+      `anti-run: evidence has no "Status:" line, so the outcome is unverified\n` +
+      `  → ${result.evidence}`,
+    );
+  }
+  console.log(JSON.stringify(result, null, 2));
 }

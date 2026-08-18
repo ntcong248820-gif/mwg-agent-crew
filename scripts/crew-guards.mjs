@@ -88,6 +88,32 @@ export function assertEvidenceWritten(evidenceAbs, context) {
   return size;
 }
 
+/**
+ * The worker's own `Status:` line, read back off the evidence file.
+ *
+ * A worker that finished and a worker that stopped at the cost gate both leave a
+ * non-empty evidence file, so file existence alone cannot tell them apart. The
+ * contract puts the verdict on the last Status line; this reads it rather than
+ * trusting the runtime's exit code.
+ */
+const WORKER_STATUS = {
+  DONE: "done",
+  DONE_WITH_CONCERNS: "done_with_concerns",
+  BLOCKED: "blocked",
+  NEEDS_CONTEXT: "needs_context",
+};
+
+export function readWorkerStatus(evidenceAbs) {
+  const lines = readFileSync(evidenceAbs, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const verdict = lines[i].match(/^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/)?.[1];
+    if (verdict) return { status: WORKER_STATUS[verdict], reported: verdict };
+  }
+  // No Status line means the worker ignored the contract, so we cannot say the
+  // job succeeded -- but the evidence may still be usable. Flag, do not judge.
+  return { status: "done_unverified", reported: null };
+}
+
 export function readPrompt({ prompt, promptFile }) {
   if (promptFile) {
     const abs = resolve(promptFile);
