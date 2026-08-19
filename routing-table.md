@@ -33,6 +33,21 @@ khi có mẫu.
 Job `app` **không** trả kết quả về stdout. Đừng chọn `app` cho việc mà Claude cần output
 để làm bước sau.
 
+### Đo được về app mode (2026-08-19)
+
+Worker app mode ghi xong report sau 23 giây, nhưng để step `write_to_file` ở status `7`
+suốt 8 phút còn lại. Nếu phát hiện "xong" bằng step status thì job đã hoàn thành vẫn bị
+coi là đang chạy rồi bị đánh fail. Vì vậy `anti-run.mjs` lấy **file evidence** làm tín
+hiệu hoàn thành, step chỉ là dự phòng. Sau khi sửa, cùng job đó chạy 55 giây.
+
+Hệ quả khi dùng app mode:
+
+- Luôn chạy `crew-reconcile.mjs` sau một run có job app. Job app có thể hoàn thành sau
+  khi adapter đã bỏ cuộc; evidence trên đĩa mới là sự thật.
+- Job app từng dừng hẳn sau 1 tool call mà không ghi gì (conversation 6 step, không có
+  error, không có permission blob). Evidence gate bắt được. Đừng giao việc bắt buộc phải
+  ra file cho app mode nếu không ai ngồi xem.
+
 ## Model
 
 | Runtime | Mặc định | Ghi chú |

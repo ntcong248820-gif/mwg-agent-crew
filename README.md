@@ -48,7 +48,8 @@ chỉ trỏ vào.
 | `scripts/anti-run.mjs` | Chạy 1 job. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). |
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
-| `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock nên nhiều job kết thúc cùng lúc không mất update. |
+| `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock có owner token nên nhiều job kết thúc cùng lúc không mất update. |
+| `scripts/crew-reconcile.mjs` | Vá manifest từ evidence trên đĩa khi runtime chết hoặc bỏ cuộc trước lúc ghi sổ. Idempotent. |
 
 ```bash
 node mwg-agent-crew/scripts/anti-run.mjs --mode headless \
@@ -58,9 +59,18 @@ node mwg-agent-crew/scripts/anti-run.mjs --mode headless \
   --manifest <run>/manifest.json --job 1
 ```
 
+```bash
+node mwg-agent-crew/scripts/crew-reconcile.mjs <run>/manifest.json [--dry-run]
+```
+
 ### Contract không thương lượng
 
 Worker tự báo thành công **không được tính là thành công**. Chỉ tính khi có file evidence
-không rỗng nằm trong `tasks/`. Lý do: `agy` đã được quan sát trả `status=SUCCESS` với
-response rỗng và không làm gì, khi một tool nó cần bị chặn bởi permission prompt mà nó
-không hiển thị được. Job fail luôn được ghi vào manifest với `status: failed`.
+không rỗng nằm trong `tasks/`, và dòng `Status:` cuối file mới là phán quyết. Lý do:
+`agy` đã được quan sát trả `status=SUCCESS` với response rỗng và không làm gì, khi một
+tool nó cần bị chặn bởi permission prompt mà nó không hiển thị được; và một job dừng ở
+cost gate vẫn để lại file không rỗng nên nếu chỉ kiểm sự tồn tại thì bị đếm nhầm là xong.
+
+Nguyên tắc này áp cả vào vòng poll của app mode: tín hiệu hoàn thành là file evidence,
+không phải step status. Job fail được ghi `status: failed`, và `crew-reconcile.mjs` sửa
+lại nếu evidence chứng minh ngược lại.

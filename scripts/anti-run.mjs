@@ -16,6 +16,7 @@
  * The only trustworthy signal is a file on disk inside the task folder.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveAntiEnv } from "./anti-env.mjs";
 import { antiStatus } from "./anti-status.mjs";
@@ -163,27 +164,38 @@ function runApp({ promptText, workspace, evidenceAbs, model, title, timeout }) {
 
   // The app gives no completion callback, so poll the conversation store. A
   // conversation that never leaves 0 steps means the app never picked it up.
-  // "done" also requires the step count to hold still across two polls: every
-  // step of an in-flight conversation has been observed as status 3 as well, so
-  // status alone can read as finished between turns.
+  // The evidence file is the completion signal, not the step statuses.
+  //
+  // Measured: an app-mode worker wrote its report 23 seconds after dispatch,
+  // then left its write_to_file step at status 7 for the whole remaining
+  // timeout. Polling step status called that job "still running" for eight
+  // minutes after it had finished, and then failed it. Step status is an
+  // undocumented enum owned by the app; the evidence file is the contract.
+  //
+  // Steps are still polled, but only as a fallback for a worker that finished
+  // without writing the required Status line.
   const deadline = Date.now() + parseDuration(timeout);
   let last = null;
   let settledAt = null;
   for (;;) {
+    if (existsSync(evidenceAbs) && statSync(evidenceAbs).size > 0 && readWorkerStatus(evidenceAbs).reported) {
+      break;
+    }
     let prevSteps = last?.steps ?? null;
     try {
       last = antiStatus(conversationId);
     } catch {
       last = null; // the database appears a moment after the conversation does
     }
-    if (last?.state === "done" && last.steps === prevSteps) {
+    // Fallback: the conversation settled and left evidence, but no Status line.
+    if (last?.state === "done" && last.steps === prevSteps && existsSync(evidenceAbs)) {
       settledAt = last.steps;
       break;
     }
     if (Date.now() > deadline) {
       throw new AntiRunError(
         `app-mode job did not finish within ${timeout}`,
-        `conversation ${conversationId}, last seen ${JSON.stringify(last)}`,
+        `conversation ${conversationId}, evidence not written; last seen ${JSON.stringify(last)}`,
       );
     }
     sleepMs(POLL_INTERVAL_MS);
@@ -200,7 +212,7 @@ function runApp({ promptText, workspace, evidenceAbs, model, title, timeout }) {
     startedAt: started.toISOString(),
     endedAt,
     durationSec: Math.round((Date.parse(endedAt) - started.getTime()) / 1000),
-    steps: settledAt,
+    steps: settledAt ?? last?.steps ?? null,
     evidence: evidenceAbs,
     evidenceBytes,
     status: verdict.status,
@@ -257,6 +269,9 @@ function parseArgv(argv) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   let opts = {};
   let result = null;
+  // Captured before the job starts so a failed job still has a duration; the
+  // failure path never sees the timestamps that antiRun() builds internally.
+  const dispatchedAt = new Date().toISOString();
   try {
     opts = parseArgv(process.argv.slice(2));
     result = antiRun(opts);
@@ -268,6 +283,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         const { updateJob } = await import("./crew-manifest.mjs");
         updateJob(opts.manifest, Number(opts.job), {
           status: "failed",
+          startedAt: dispatchedAt,
           endedAt: new Date().toISOString(),
           failure: err.message,
         });
