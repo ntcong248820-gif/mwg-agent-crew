@@ -50,7 +50,9 @@ chỉ trỏ vào.
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
 | `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock có owner token nên nhiều job kết thúc cùng lúc không mất update. |
-| `scripts/crew-reconcile.mjs` | Vá manifest từ evidence trên đĩa khi runtime chết hoặc bỏ cuộc trước lúc ghi sổ. Idempotent. |
+| `scripts/crew-reconcile.mjs` | Vá manifest từ evidence trên đĩa khi runtime chết hoặc bỏ cuộc trước lúc ghi sổ. Idempotent. Không ghi đè phán quyết đã đậu. |
+| `scripts/crew-collect.mjs` | Cổng nghiệm thu cuối run: reconcile → phán từng job → kiểm trùng `evidence_path` → kiểm phạm vi ghi → in bảng verdict. Exit 0 mới được viết report tổng. |
+| `scripts/crew-scope.mjs` | Quy file thay đổi trong working tree về từng job theo mtime nằm trong khoảng job đó chạy. Tách khỏi collect vì đây là logic quy trách nhiệm, không phải logic phán quyết. |
 
 ```bash
 node mwg-agent-crew/scripts/codex-run.mjs \
@@ -72,6 +74,64 @@ node mwg-agent-crew/scripts/anti-run.mjs --mode headless \
 node mwg-agent-crew/scripts/crew-reconcile.mjs <run>/manifest.json [--dry-run]
 ```
 
+```bash
+node mwg-agent-crew/scripts/crew-collect.mjs <run>/manifest.json \
+  [--abandon <seq>] [--grace <ms>] [--dry-run]
+```
+
+### Phạm vi ghi đo bằng thời gian, không bằng diff
+
+`git status` một mình không dùng được ở workspace này: repo thường xuyên mang sẵn
+hàng trăm file đang sửa dở của user, nên diff thuần sẽ tố cả những file run không
+hề chạm. Nên quy trách nhiệm bằng **mtime nằm trong khoảng từng job chạy**, không
+phải khoảng của cả run.
+
+Per-job là khác biệt giữa một cái kiểm dùng được và một cái vô dụng: cửa sổ theo
+run từng tố 32 file skill vào một run mà job duy nhất của nó **chưa từng start** —
+user sửa đúng mấy file đó trong cùng 5 phút. Job không có `startedAt`, hoặc job đã
+`cancelled`, thì không có khoảng nào, nên không quy được gì cho nó. Khoảng của các
+job chạy song song luôn chồng nhau, nên file ngoài phạm vi được nêu **mọi job ứng
+viên** — cái tên đó là chỗ người đọc dùng để tìm thủ phạm, đoán một job là đoán sai.
+
+**Khoảng suy đoán thì không chặn.** Job chết không kịp ghi `endedAt` thì không ai
+biết nó chạy đến lúc nào. Khoảng của nó bị chặn trần ở `startedAt + 35 phút` và
+đánh dấu `bounded: false`; file lọt vào đó chỉ ra `NGHI VẤN PHẠM VI`, không exit 2.
+Bản đầu đánh fail thẳng, và hậu quả là gate **không thể qua được** đúng trên những
+run nó sinh ra để canh — dạy dispatcher bỏ qua gate trong đúng một ngày. Cùng lý do
+đó, `reconcile` điền `endedAt` bù thì ghi kèm `endedAtInferred: true`: giờ kết thúc
+bù là sổ sách, không phải quan sát, và một giờ kết thúc bịa ở "now" từng cho job
+chết một tiếng trước cái cửa sổ chạy tới hiện tại.
+
+**Git không thấy file bị ignore, nên phải tự đi tìm.** `.codex/config.toml`,
+`*.env`, `tasks/*/data/`, và `mwg-content-editor/content-workspaces/` đều bị
+gitignore ở repo này — tức là chỗ ghi hợp lệ mà tài liệu vẫn đang chỉ cho
+`filesMayModify` lại là chỗ git mù hoàn toàn. Nên gate stat thêm 2 nhóm ngoài
+`git status`: mọi prefix có khai `filesMayModify`, và danh sách `PROTECTED_PATHS`
+lấy từ Protected Files của `CLAUDE.md`. Ghi vào file được bảo vệ là exit 2, không
+có đường khai để hợp lệ hoá.
+
+Giới hạn còn lại, cố ý không vá: **file đã commit thì gate không thấy** — nó chỉ đọc
+working tree. Worker không được commit, và có gọi `git log` thì cũng không biết ai
+là tác giả thật của commit. File bị xoá cũng không quy được cho job nào (xoá thì
+không còn mtime) nên chỉ được nêu ra, không chặn — repo này đang mang sẵn một file
+xoá không liên quan, gate mà fail vì nó thì hôm sau không ai chạy nữa.
+
+File ghi hợp lệ ra ngoài `tasks/{task}/` phải khai `filesMayModify` lúc `addJob`
+(ví dụ `mwg-content-editor/content-workspaces/{slug}/`). Prefix được chuẩn hoá kết
+thúc bằng `/` và chỉ áp cho **chính job đã khai** — khai `docs` không mở đường cho
+`docs-secret.md`, và job 2 không dùng được quyền của job 1.
+
+### `--abandon` không phải nút xoá đỏ
+
+`--abandon <seq>` chỉ bỏ được job đang là `STALE` (pending, quá 35 phút, không có
+evidence). Job mà adapter đã ghi `failed` + `failure` thì **từ chối** — nếu không,
+một cờ duy nhất biến exit 1 thành exit 0 và job chết biến khỏi mẫu số. `--dry-run`
+phủ luôn `--abandon`, vì cờ an toàn mà không phủ cờ ghi thì vô nghĩa.
+
+Mọi tham số có thể tắt một phép kiểm đều bị validate, không coerce: `--grace abc`
+từng cho `to = NaN`, mọi so sánh false, toàn bộ file rơi vào "ngoài cửa sổ", và run
+ra exit 0 mà không nói gì.
+
 ## Tests
 
 ```bash
@@ -85,6 +145,7 @@ nội dung manifest — nên một runner spawn được process và so được
 | File | Đo gì |
 | --- | --- |
 | `tests/judge-verdict.test.mjs` | 9 ca của bảng phán quyết `judgeJob()`: đủ tổ hợp evidence có/rỗng/thiếu × runtime ok/fail × có/không dòng `Status:`. |
+| `tests/collect-gate.test.mjs` | Cổng nghiệm thu trên các run dựng sẵn để sai đúng 1 kiểu: trùng evidence sau khi resolve, ghi ngoài phạm vi, ghi vào file được bảo vệ, ghi vào prefix bị gitignore đã khai, biên prefix, khoảng suy đoán, xoá file, `--abandon` job đã fail, `--dry-run` phủ `--abandon`, `--grace` không phải số, chạy từ cwd khác, echo template brief, provenance evidence, WARN bền qua 2 lần collect, cost gate chỉ nằm trong evidence. |
 | `tests/codex-lifecycle.test.mjs` | Vòng đời `codex-run.mjs` qua `codex` giả: grandchild giữ stdout, brief 200KB vào child không đọc stdin, watchdog trước stderr rác, retry đè sidecar cũ, log dir sai quyền, `BLOCKED` phải exit 3, và manifest phải ghi được ca bị giết. |
 | `tests/fixtures/fake-codex` | `codex` giả, chọn hình dạng lỗi bằng `FAKE_MODE`. `tests/fixtures/bin/codex` là symlink trỏ vào nó — phải đúng tên `codex`, không thì PATH rơi xuống CLI thật và bộ test không đo gì cả. |
 
@@ -111,3 +172,10 @@ xong ngày 2026-08-24: `agy` trả `ERROR`, evidence đủ và đạt acceptance
 được, và khi evidence không có dòng `Status:`. Runtime báo fail mà evidence tự phán được
 thì ghi thành `runtimeVerdict` — bất đồng, không phải thất bại — để bước collect đưa ra
 cho người đọc thay vì chôn đi.
+
+`crew-collect.mjs` cơ khí hoá đúng contract này. Nó in `PASS + WARN` cho mọi ca bất
+đồng — cả `runtimeVerdict`, cả manifest có `failure`, cả job bị reconcile vá từ `failed`
+lên đậu — và không tự giải quyết, vì chỉ người đọc phân biệt được lỗi runtime với job
+làm nửa vời. Đối lại, reconcile **không ghi đè phán quyết đã đậu**: một job
+`done_verified_manually` (người đã đọc artifact sau khi runtime hô ERROR) từng bị viết
+lại thành `done` trơn, mất cả dấu đã kiểm lẫn cái bất đồng đáng đưa ra.

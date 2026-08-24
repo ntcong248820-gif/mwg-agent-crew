@@ -18,8 +18,8 @@
  * script's, because only the dispatcher knows whether the runtime is still up.
  */
 import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { readManifest, updateJob } from "./crew-manifest.mjs";
+import { resolve } from "node:path";
+import { readManifest, updateJob, appendNote } from "./crew-manifest.mjs";
 import { readWorkerStatus } from "./crew-guards.mjs";
 
 /**
@@ -36,17 +36,30 @@ import { readWorkerStatus } from "./crew-guards.mjs";
  * patched when its evidence carries a real Status line, and a job whose status
  * already came from that evidence (reportedStatus is set) is left alone.
  */
+/** Verdicts that already mean "passed"; reconcile must not rewrite these. */
+const TERMINAL_PASS = new Set(["done", "done_with_concerns", "done_verified_manually"]);
+
+/**
+ * Where a job's evidence actually is.
+ *
+ * Resolution is against the run's own workspace, never `process.cwd()`. A
+ * cwd-relative lookup made the verdict depend on where the command was invoked
+ * from: the same finished job read as PASS from the repo root and as unfinished
+ * from anywhere else -- and in a second checkout with the same layout it would
+ * have read a different tree's file entirely.
+ */
+export function resolveEvidence(job, workspace) {
+  const declared = resolve(workspace, job.evidence);
+  return existsSync(declared) ? declared : null;
+}
+
 export function reconcileRun(manifestPath, { dryRun = false } = {}) {
   const abs = resolve(manifestPath);
   const manifest = readManifest(abs);
-  const runDir = dirname(abs);
   const result = { runId: manifest.runId, patched: [], waiting: [], untouched: [] };
 
   for (const job of manifest.jobs) {
-    const evidenceAbs = resolve(runDir, job.evidence.split("/").pop());
-    const candidate = existsSync(job.evidence) ? resolve(job.evidence)
-      : existsSync(evidenceAbs) ? evidenceAbs
-      : null;
+    const candidate = resolveEvidence(job, manifest.workspace);
 
     if (!candidate) {
       // No evidence yet: the job may still be running, and only the dispatcher
@@ -58,6 +71,15 @@ export function reconcileRun(manifestPath, { dryRun = false } = {}) {
     const verdict = readWorkerStatus(candidate);
     if (job.reportedStatus) {
       result.untouched.push({ seq: job.seq, status: job.status, why: "đã đọc từ evidence trước đó" });
+      continue;
+    }
+    // A verdict that already says the job passed is left alone even without a
+    // reportedStatus field. Overwriting it can only lose information: a run
+    // recorded as done_verified_manually -- a human read the artifact after the
+    // runtime cried ERROR -- was being rewritten to a plain done, throwing away
+    // both the fact that it was checked and the disagreement worth showing.
+    if (TERMINAL_PASS.has(job.status)) {
+      result.untouched.push({ seq: job.seq, status: job.status, why: "đã có phán quyết đậu, không ghi đè" });
       continue;
     }
     if (!verdict.reported) {
@@ -74,8 +96,23 @@ export function reconcileRun(manifestPath, { dryRun = false } = {}) {
         status: verdict.status,
         reportedStatus: verdict.reported,
         endedAt: job.endedAt ?? new Date().toISOString(),
-        notes: [...(job.notes ?? []), `reconcile: ${job.status} → ${verdict.status} theo evidence trên đĩa`],
+        // A filled-in end time is bookkeeping, not an observation, and it must
+        // say so: the write-scope check derives each job's interval from it, and
+        // an invented end at "now" gave a job that died an hour ago a window
+        // reaching the present -- which then charged it with everything the user
+        // edited meanwhile.
+        endedAtInferred: job.endedAt ? undefined : true,
+        // Persisted, not just printed. The collect gate raises a WARN on this
+        // disagreement, and it used to read it from the ephemeral patch list --
+        // so the first collect flagged the job and a second collect showed a
+        // clean pass. Bước 7 tells the dispatcher to re-run collect while jobs
+        // are live, which made the final gating run the one that lost the flag.
+        // `pending` is excluded: that is a job nobody got round to recording,
+        // not a runtime that claimed the opposite of the evidence.
+        disagreement: job.status === "pending" ? undefined
+          : `manifest ghi ${job.status}, evidence phán ${verdict.reported}`,
       });
+      appendNote(abs, job.seq, `reconcile: ${job.status} → ${verdict.status} theo evidence trên đĩa`);
     }
   }
   return result;

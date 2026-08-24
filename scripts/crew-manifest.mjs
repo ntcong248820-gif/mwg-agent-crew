@@ -195,6 +195,11 @@ export function addJob(manifestPath, job) {
       model: job.model ?? null,
       title: job.title,
       evidence: job.evidence,
+      // Path prefixes this job is allowed to write outside tasks/{task}/. Some
+      // real work lands there -- an article edit belongs in
+      // mwg-content-editor/content-workspaces/ -- and the collect gate treats
+      // an undeclared write as a scope violation.
+      filesMayModify: job.filesMayModify ?? [],
       status: "pending",
       conversationId: null,
       startedAt: null,
@@ -208,6 +213,25 @@ export function addJob(manifestPath, job) {
     return m;
   });
   return added;
+}
+
+/**
+ * Appends notes to a job inside the lock.
+ *
+ * `updateJob` assigns `notes` wholesale, so building the array from a snapshot
+ * read outside the lock loses any note another process appended in between --
+ * and the collect gate is explicitly expected to run while jobs are still live.
+ */
+export function appendNote(manifestPath, seq, ...notes) {
+  let updated;
+  updateManifest(manifestPath, (m) => {
+    const job = m.jobs.find((j) => j.seq === seq);
+    if (!job) throw new ManifestError(`no job with seq ${seq} in ${manifestPath}`);
+    job.notes = [...(job.notes ?? []), ...notes.filter(Boolean)];
+    updated = job;
+    return m;
+  });
+  return updated;
 }
 
 export function updateJob(manifestPath, seq, patch) {

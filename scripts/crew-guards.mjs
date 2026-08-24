@@ -107,7 +107,15 @@ export function readWorkerStatus(evidenceAbs) {
   const lines = readFileSync(evidenceAbs, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const verdict = lines[i].match(/^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/)?.[1];
-    if (verdict) return { status: WORKER_STATUS[verdict], reported: verdict };
+    if (!verdict) continue;
+    // The brief hands the worker the literal line
+    // `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, so a worker
+    // that echoes its own brief -- or pastes the template while reporting that
+    // it achieved nothing -- would otherwise be read as DONE. A real verdict
+    // names exactly one outcome.
+    const tokens = lines[i].match(/\b(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/g) ?? [];
+    if (new Set(tokens).size > 1) continue;
+    return { status: WORKER_STATUS[verdict], reported: verdict };
   }
   // No Status line means the worker ignored the contract, so we cannot say the
   // job succeeded -- but the evidence may still be usable. Flag, do not judge.
