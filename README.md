@@ -72,6 +72,26 @@ node mwg-agent-crew/scripts/anti-run.mjs --mode headless \
 node mwg-agent-crew/scripts/crew-reconcile.mjs <run>/manifest.json [--dry-run]
 ```
 
+## Tests
+
+```bash
+node mwg-agent-crew/tests/run.mjs
+```
+
+Chạy mọi `tests/*.test.mjs`, mỗi file 1 process, exit khác 0 nếu có case fail.
+Không có framework: thứ cần đo là hành vi ở biên process — exit code, file trên đĩa,
+nội dung manifest — nên một runner spawn được process và so được string là đủ.
+
+| File | Đo gì |
+| --- | --- |
+| `tests/judge-verdict.test.mjs` | 9 ca của bảng phán quyết `judgeJob()`: đủ tổ hợp evidence có/rỗng/thiếu × runtime ok/fail × có/không dòng `Status:`. |
+| `tests/codex-lifecycle.test.mjs` | Vòng đời `codex-run.mjs` qua `codex` giả: grandchild giữ stdout, brief 200KB vào child không đọc stdin, watchdog trước stderr rác, retry đè sidecar cũ, log dir sai quyền, `BLOCKED` phải exit 3, và manifest phải ghi được ca bị giết. |
+| `tests/fixtures/fake-codex` | `codex` giả, chọn hình dạng lỗi bằng `FAKE_MODE`. `tests/fixtures/bin/codex` là symlink trỏ vào nó — phải đúng tên `codex`, không thì PATH rơi xuống CLI thật và bộ test không đo gì cả. |
+
+5 lỗi lifecycle nặng nhất của phase 1 đều nằm ở chỗ không có script nào chạm tới, và
+không có ca nào trong đó một `codex` thật chịu tái hiện theo yêu cầu. Đó là lý do có
+`fake-codex` thay vì test bằng runtime thật.
+
 ### Contract không thương lượng
 
 Worker tự báo thành công **không được tính là thành công**. Chỉ tính khi có file evidence
