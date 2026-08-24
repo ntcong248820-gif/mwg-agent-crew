@@ -54,7 +54,12 @@ Hệ quả khi dùng app mode:
 | --- | --- | --- |
 | `agy` | `gemini-3.7-flash-medium` | nhận tên model đầy đủ; đổi sang `gemini-3.1-pro-high` khi việc cần nặng |
 | `agentapi` | `flash` | **chỉ** nhận `flash_lite\|flash\|pro\|inherit`, không nhận tên đầy đủ |
-| Codex | để trống | plugin tự chọn; chỉ pin `--model` khi user yêu cầu |
+| Codex | không tự đặt — brief phải truyền `--effort` | `codex-run.mjs`; `-m` để trống cho codex tự chọn. Dùng `medium` cho việc thường, `high` cho việc nhiều bước. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
+
+Dispatch Codex đi qua `codex-run.mjs`, **không** qua subagent `codex:codex-rescue`:
+subagent đó là forwarder, không được poll/monitor/lấy kết quả, nên job chết là không ai
+ghi sổ. Đo 2026-08-24: pid chết ở phút 2, manifest không có field `failure` nào, phát
+hiện ở phút 22.
 
 ## Khi KHÔNG dùng crew
 

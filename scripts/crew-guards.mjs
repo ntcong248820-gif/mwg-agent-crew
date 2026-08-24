@@ -126,3 +126,50 @@ export function readPrompt({ prompt, promptFile }) {
   if (!text) throw new GuardError("--prompt or --prompt-file is required");
   return text;
 }
+
+/**
+ * The verdict for one finished job, with evidence outranking the runtime.
+ *
+ * Both adapters used to ask the runtime first and only look at the evidence
+ * afterwards. That inverted the module's own rule and cost two real jobs: agy
+ * returned status=ERROR twice on 2026-08-24 while the work was complete and the
+ * evidence file met its acceptance criteria, so both were recorded as failed and
+ * had to be patched by hand into a status that does not exist in the contract.
+ *
+ * So the runtime's own verdict is consulted in exactly two places: when there is
+ * no usable evidence (then it is all we have), and when the evidence carries no
+ * Status line (then it decides whether an unverified report is a finished job or
+ * a corpse). A runtime failure over evidence that does carry a Status line is
+ * recorded as disagreement -- `runtimeVerdict` -- not as failure, because the
+ * collect step has to show a human that disagreement rather than bury it.
+ */
+export function judgeJob(evidenceAbs, { runtimeOk, runtimeDetail = null, context = "" }) {
+  if (!existsSync(evidenceAbs) || statSync(evidenceAbs).size === 0) {
+    // No evidence: the runtime's account is the only account there is. Two
+    // different stories need two different headlines -- a worker that claimed
+    // success and wrote nothing is a silent failure, while a worker that was
+    // killed never got the chance to claim anything.
+    if (runtimeOk) assertEvidenceWritten(evidenceAbs, context);
+    throw new GuardError(
+      "the job did not finish and left no usable evidence",
+      `${runtimeDetail ?? "the runtime failed with no detail"}\n  expected ${evidenceAbs}\n  ${context}`,
+    );
+  }
+  const evidenceBytes = statSync(evidenceAbs).size;
+  const verdict = readWorkerStatus(evidenceAbs);
+
+  if (!verdict.reported && !runtimeOk) {
+    throw new GuardError(
+      "the runtime failed and the evidence carries no Status line",
+      `${runtimeDetail ?? "no detail"}\n  the evidence at ${evidenceAbs} is kept for reading, but it cannot be judged`,
+    );
+  }
+
+  return {
+    status: verdict.status,
+    reportedStatus: verdict.reported,
+    evidenceBytes,
+    // Set only when the runtime disagreed with evidence that judged itself.
+    runtimeVerdict: runtimeOk ? null : (runtimeDetail ?? "runtime reported failure"),
+  };
+}

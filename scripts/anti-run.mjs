@@ -14,6 +14,11 @@
  * was blocked by a permission prompt it could not show. A worker that reports
  * success without writing its evidence file is therefore treated as failed.
  * The only trustworthy signal is a file on disk inside the task folder.
+ *
+ * And the order matters as much as the gate: agy's verdict is collected first
+ * but judged last, by judgeJob() in crew-guards.mjs. Asking the runtime first
+ * cost two finished jobs on 2026-08-24, recorded as failed on an agy ERROR
+ * while their evidence was complete.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
@@ -24,7 +29,7 @@ import {
   DEFAULT_TIMEOUT,
   GuardError,
   assertEvidenceAbsent,
-  assertEvidenceWritten,
+  judgeJob,
   parseDuration,
   readPrompt,
   readWorkerStatus,
@@ -69,50 +74,59 @@ function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMo
   const stdout = (proc.stdout ?? "").trim();
   const stderrTail = (proc.stderr ?? "").trim().split("\n").slice(-5).join("\n");
 
+  // Everything below builds agy's own account of the run. It is collected, not
+  // acted on: judgeJob() consults it only where the evidence cannot speak. Two
+  // jobs on 2026-08-24 were recorded as failed on an agy ERROR while their
+  // evidence was complete and met its acceptance criteria, and both had to be
+  // patched by hand -- that is the inversion this ordering removes.
+  let parsed = null;
+  let runtimeDetail = null;
+
   if (proc.status !== 0) {
-    throw new AntiRunError(`agy exited ${proc.status}`, stderrTail || stdout.slice(0, 500));
+    runtimeDetail = `agy exited ${proc.status}: ${stderrTail || stdout.slice(0, 300)}`;
+  } else {
+    try {
+      // agy prints one JSON object; take the last line in case of stray output.
+      parsed = JSON.parse(stdout.split("\n").filter(Boolean).pop());
+    } catch (err) {
+      runtimeDetail = `agy output is not JSON: ${err.message}`;
+    }
+  }
+  if (parsed && parsed.status !== "SUCCESS") {
+    runtimeDetail = `agy reported status ${parsed.status}`;
+  } else if (parsed && !String(parsed.response ?? "").trim()) {
+    // The silent-failure case: SUCCESS with nothing said, which is what a
+    // blocked permission prompt looks like from out here. It still only decides
+    // the outcome when no evidence was written.
+    runtimeDetail = "agy returned SUCCESS with an empty response (silent failure);"
+      + " a tool it needed was probably blocked -- check the brief and permissions";
   }
 
-  let parsed;
-  try {
-    // agy prints one JSON object; take the last line in case of stray output.
-    parsed = JSON.parse(stdout.split("\n").filter(Boolean).pop());
-  } catch (err) {
-    throw new AntiRunError(`agy output is not JSON: ${err.message}`, stdout.slice(0, 500));
-  }
-  if (parsed.status !== "SUCCESS") {
-    throw new AntiRunError(`agy reported status ${parsed.status}`, JSON.stringify(parsed).slice(0, 800));
-  }
-  if (!String(parsed.response ?? "").trim()) {
-    throw new AntiRunError(
-      "agy returned SUCCESS with an empty response (silent failure)",
-      "this usually means a tool it needed was blocked; check the brief and permissions",
-    );
-  }
-
-  const evidenceBytes = assertEvidenceWritten(
-    evidenceAbs,
-    `agy conversation ${parsed.conversation_id}`,
-  );
-  const verdict = readWorkerStatus(evidenceAbs);
+  const verdict = judgeJob(evidenceAbs, {
+    runtimeOk: runtimeDetail === null,
+    runtimeDetail,
+    context: `agy conversation ${parsed?.conversation_id ?? "unknown"}`,
+  });
+  const evidenceBytes = verdict.evidenceBytes;
 
   return {
     worker: "antigravity",
     mode: "headless",
-    conversationId: parsed.conversation_id,
+    conversationId: parsed?.conversation_id ?? null,
     startedAt: started.toISOString(),
     endedAt,
     // Two clocks on purpose: durationSec is wall time (what a work log bills)
     // and agentDurationSec is what the agent itself reported (what a prompt cost).
     durationSec: Math.round((Date.parse(endedAt) - started.getTime()) / 1000),
-    agentDurationSec: parsed.duration_seconds ? Math.round(parsed.duration_seconds) : null,
-    numTurns: parsed.num_turns ?? null,
-    usage: parsed.usage ?? null,
-    response: parsed.response.trim(),
+    agentDurationSec: parsed?.duration_seconds ? Math.round(parsed.duration_seconds) : null,
+    numTurns: parsed?.num_turns ?? null,
+    usage: parsed?.usage ?? null,
+    response: String(parsed?.response ?? "").trim() || null,
     evidence: evidenceAbs,
     evidenceBytes,
     status: verdict.status,
-    reportedStatus: verdict.reported,
+    reportedStatus: verdict.reportedStatus,
+    runtimeVerdict: verdict.runtimeVerdict,
   };
 }
 
@@ -202,8 +216,13 @@ function runApp({ promptText, workspace, evidenceAbs, model, title, timeout }) {
   }
 
   const endedAt = new Date().toISOString();
-  const evidenceBytes = assertEvidenceWritten(evidenceAbs, `app conversation ${conversationId}`);
-  const verdict = readWorkerStatus(evidenceAbs);
+  // App mode has no runtime verdict to disagree with -- reaching here means the
+  // evidence file appeared, which is the completion signal for this transport.
+  const verdict = judgeJob(evidenceAbs, {
+    runtimeOk: true,
+    context: `app conversation ${conversationId}`,
+  });
+  const evidenceBytes = verdict.evidenceBytes;
 
   return {
     worker: "antigravity",
@@ -216,7 +235,8 @@ function runApp({ promptText, workspace, evidenceAbs, model, title, timeout }) {
     evidence: evidenceAbs,
     evidenceBytes,
     status: verdict.status,
-    reportedStatus: verdict.reported,
+    reportedStatus: verdict.reportedStatus,
+    runtimeVerdict: verdict.runtimeVerdict,
   };
 }
 
@@ -248,6 +268,21 @@ export function antiRun(options) {
 export { AntiRunError };
 export { parseDuration, validateEvidencePath } from "./crew-guards.mjs";
 
+const KNOWN_FLAGS = new Set([
+  "prompt", "promptFile", "evidence", "workspace", "timeout",
+  "mode", "agyMode", "model", "title", "manifest", "job",
+]);
+
+/**
+ * The message has to print what the CLI actually accepts. KNOWN_FLAGS holds the
+ * internal keys, so a raw dump of it would tell the caller to use --promptFile
+ * when the flag is --prompt-file.
+ */
+function knownFlagSpellings(alias) {
+  const cliName = Object.fromEntries(Object.entries(alias).map(([cli, key]) => [key, cli]));
+  return [...KNOWN_FLAGS].map((key) => `--${cliName[key] ?? key}`);
+}
+
 function parseArgv(argv) {
   const out = {};
   const alias = {
@@ -258,12 +293,26 @@ function parseArgv(argv) {
     const arg = argv[i];
     if (!arg.startsWith("--")) throw new AntiRunError(`unexpected argument "${arg}"`);
     const name = arg.slice(2);
+    const key = alias[name] ?? name;
+    // An unknown flag used to be accepted and ignored, so a typo in --model
+    // silently ran the job on the default tier.
+    if (!KNOWN_FLAGS.has(key)) {
+      throw new AntiRunError(`unknown flag --${name}`, `known flags: ${knownFlagSpellings(alias).join(" ")}`);
+    }
     const value = argv[i + 1];
     if (value === undefined || value.startsWith("--")) throw new AntiRunError(`--${name} needs a value`);
-    out[alias[name] ?? name] = value;
+    out[key] = value;
     i += 1;
   }
   return out;
+}
+
+/** Exit 3: the job finished but a human has to look before it counts. */
+function needsHuman(result) {
+  return Boolean(result.runtimeVerdict)
+    || result.status === "done_unverified"
+    || result.status === "blocked"
+    || result.status === "needs_context";
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -300,10 +349,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // a bookkeeping problem, never as a failed job.
   if (opts.manifest && opts.job) {
     try {
-      const { updateJob } = await import("./crew-manifest.mjs");
+      const { readManifest, updateJob } = await import("./crew-manifest.mjs");
+      const prior = readManifest(opts.manifest).jobs.find((j) => j.seq === Number(opts.job))?.notes ?? [];
       updateJob(opts.manifest, Number(opts.job), {
+        notes: result.runtimeVerdict
+          ? [...prior, `runtime báo fail (${result.runtimeVerdict}) nhưng evidence tự phán ${result.reportedStatus} — cần người đọc`]
+          : prior,
         status: result.status,
         reportedStatus: result.reportedStatus,
+        runtimeVerdict: result.runtimeVerdict,
         conversationId: result.conversationId,
         startedAt: result.startedAt,
         endedAt: result.endedAt,
@@ -321,6 +375,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   }
 
+  // A runtime that disagreed with self-judging evidence must be said out loud,
+  // not resolved quietly in either direction.
+  if (result.runtimeVerdict) {
+    console.error(
+      `anti-run: the runtime disagreed with the evidence (${result.runtimeVerdict})\n` +
+      `  → evidence judged itself ${result.reportedStatus}; a human must read ${result.evidence}`,
+    );
+  }
   // A worker that skipped the contract's Status line cannot be judged silently.
   if (result.status === "done_unverified") {
     console.error(
@@ -329,4 +391,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     );
   }
   console.log(JSON.stringify(result, null, 2));
+  // Background dispatch made the exit code the ping, so a job that needs a human
+  // must not ping as a clean success.
+  process.exit(needsHuman(result) ? 3 : 0);
 }

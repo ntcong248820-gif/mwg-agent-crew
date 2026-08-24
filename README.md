@@ -45,11 +45,20 @@ chỉ trỏ vào.
 | Script | Việc |
 | --- | --- |
 | `scripts/anti-env.mjs` | Discover runtime của app Antigravity 2.0 (pid, gRPC address, projectId). Không hardcode giá trị nào; app restart thì tự discover lại. |
-| `scripts/anti-run.mjs` | Chạy 1 job. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). |
+| `scripts/anti-run.mjs` | Chạy 1 job Antigravity. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). |
+| `scripts/codex-run.mjs` | Chạy 1 job Codex qua `codex exec --json`. Watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. Ghi log stream cạnh evidence. |
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
 | `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock có owner token nên nhiều job kết thúc cùng lúc không mất update. |
 | `scripts/crew-reconcile.mjs` | Vá manifest từ evidence trên đĩa khi runtime chết hoặc bỏ cuộc trước lúc ghi sổ. Idempotent. |
+
+```bash
+node mwg-agent-crew/scripts/codex-run.mjs \
+  --prompt-file <brief.md> \
+  --evidence tasks/<task>/reports/<job>.md \
+  --timeout 15m --idle-timeout 2m --effort medium --workspace "$PWD" \
+  --manifest <run>/manifest.json --job 2
+```
 
 ```bash
 node mwg-agent-crew/scripts/anti-run.mjs --mode headless \
@@ -74,3 +83,11 @@ cost gate vẫn để lại file không rỗng nên nếu chỉ kiểm sự tồ
 Nguyên tắc này áp cả vào vòng poll của app mode: tín hiệu hoàn thành là file evidence,
 không phải step status. Job fail được ghi `status: failed`, và `crew-reconcile.mjs` sửa
 lại nếu evidence chứng minh ngược lại.
+
+**Thứ tự quan trọng ngang cái gate.** Verdict của runtime được thu thập trước nhưng phán
+sau, bằng `judgeJob()` trong `crew-guards.mjs`. Hỏi runtime trước đã làm mất 2 job đã
+xong ngày 2026-08-24: `agy` trả `ERROR`, evidence đủ và đạt acceptance, job vẫn bị ghi
+`failed` rồi phải sửa tay. Runtime chỉ có tiếng nói ở 2 chỗ: khi không có evidence dùng
+được, và khi evidence không có dòng `Status:`. Runtime báo fail mà evidence tự phán được
+thì ghi thành `runtimeVerdict` — bất đồng, không phải thất bại — để bước collect đưa ra
+cho người đọc thay vì chôn đi.
