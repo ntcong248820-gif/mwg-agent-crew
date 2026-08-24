@@ -25,9 +25,9 @@
  * The prompt goes in on stdin rather than argv: a brief is a file, and argv has
  * a length limit that a long brief can reach.
  */
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import {
   DEFAULT_TIMEOUT,
   GuardError,
@@ -44,6 +44,12 @@ const DEFAULT_IDLE_MS = 120_000;
 const KILL_GRACE_MS = 5_000;
 /** How long to keep draining stdout after the child has exited. */
 const DRAIN_MS = 2_000;
+/**
+ * Per-write cap for the stream log. An event carrying a whole file read is both
+ * the bulk of the log's size and the part most likely to hold something that
+ * should not be written down; a truncated event still says what happened.
+ */
+const MAX_EVENT_BYTES = 8 * 1024;
 
 /**
  * Measured 2026-08-24: `codex exec -c model_reasoning_effort=bogus` runs happily
@@ -92,7 +98,11 @@ function makeStreamWriter(streamPath) {
     write(text) {
       if (broken) return;
       try {
-        appendFileSync(streamPath, text);
+        const s = String(text);
+        appendFileSync(
+          streamPath,
+          s.length > MAX_EVENT_BYTES ? `${s.slice(0, MAX_EVENT_BYTES)}…[crew: cắt ${s.length - MAX_EVENT_BYTES} byte]\n` : s,
+        );
       } catch (err) {
         broken = err.message;
         process.stderr.write(`codex-run: stream log disabled (${err.message})\n`);
@@ -106,6 +116,29 @@ function makeStreamWriter(streamPath) {
     },
     get broken() { return broken; },
   };
+}
+
+/**
+ * Where a job's raw log goes: the task's own `data/` folder, never next to the
+ * evidence in `reports/`.
+ *
+ * The reason is that a task's `data/` folder is already ignored by git, for both
+ * the flat and the work-item layout. Keeping the log beside the evidence meant
+ * same fact -- "these two files are legitimate and must not be committed" --
+ * had to be written in three places: gitignore patterns, a whitelist in the
+ * skill's collect step, and an exception in the collect gate. One existing rule
+ * replaces all three, and the manifest records the path so nothing has to guess
+ * the name.
+ */
+export function resolveLogDir(evidenceAbs, workspace) {
+  const rel = relative(workspace, evidenceAbs).split(sep);
+  const i = rel.lastIndexOf("reports");
+  // rel[i + 1] is the run folder; if it is the evidence file itself the job was
+  // dispatched loose, without a run folder.
+  const inRunFolder = i > 0 && i + 2 <= rel.length - 1;
+  const owner = i > 0 ? rel.slice(0, i) : rel.slice(0, 2);
+  const runName = inRunFolder ? rel[i + 1] : "loose";
+  return join(workspace, ...owner, "data", "crew-logs", runName);
 }
 
 function buildArgs({ workspace, model, effort, lastMessagePath }) {
@@ -137,13 +170,16 @@ export function codexRun(options) {
 
   assertEvidenceAbsent(evidenceAbs);
 
-  // Both sidecars live next to the evidence, inside the task folder: the stream
-  // is the only record of how a job died. They are asserted absent for the same
-  // reason the evidence is -- a retry after an idle-kill usually happens before
-  // any evidence was written, so without this a second run would append into the
-  // first run's log and the two deaths would read as one.
-  const streamPath = `${evidenceAbs}.codex-stream.jsonl`;
-  const lastMessagePath = `${evidenceAbs}.codex-last-message.txt`;
+  // The log lives under the task's data/ folder (see resolveLogDir). Both files
+  // are asserted absent for the same reason the evidence is: a retry after an
+  // idle-kill usually happens before any evidence was written, so without this a
+  // second run would append into the first run's log and the two deaths would
+  // read as one.
+  const logDir = resolveLogDir(evidenceAbs, workspace);
+  mkdirSync(logDir, { recursive: true });
+  const base = evidenceAbs.split(sep).pop().replace(/\.md$/, "");
+  const streamPath = join(logDir, `${base}.codex-stream.jsonl`);
+  const lastMessagePath = join(logDir, `${base}.codex-last-message.txt`);
   for (const sidecar of [streamPath, lastMessagePath]) {
     if (existsSync(sidecar)) {
       throw new CodexRunError(

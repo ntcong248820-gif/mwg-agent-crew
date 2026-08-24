@@ -46,7 +46,7 @@ chỉ trỏ vào.
 | --- | --- |
 | `scripts/anti-env.mjs` | Discover runtime của app Antigravity 2.0 (pid, gRPC address, projectId). Không hardcode giá trị nào; app restart thì tự discover lại. |
 | `scripts/anti-run.mjs` | Chạy 1 job Antigravity. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). |
-| `scripts/codex-run.mjs` | Chạy 1 job Codex qua `codex exec --json`. Watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. Ghi log stream cạnh evidence. |
+| `scripts/codex-run.mjs` | Chạy 1 job Codex qua `codex exec --json`. Watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. Log stream ghi vào `tasks/{task}/data/crew-logs/{run}/` — thuộc `data/` vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest. |
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
 | `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock có owner token nên nhiều job kết thúc cùng lúc không mất update. |
