@@ -519,4 +519,27 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   t.check("...with no invented disagreement", r.rows[0].flags.length, 0);
 }
 
+// --- the model knob has to reach the manifest to be measurable at all ---
+{
+  // Every job in every manifest read `"model": null` before this: the knob
+  // existed and nothing ever set it, so which tier fails more was unknowable.
+  const ws = tmpWorkspace("model-");
+  execFileSync("git", ["init", "-q"], { cwd: ws });
+  const { manifestPath } = createRun({
+    runDir: join(ws, RUN_REL), runId: "test", task: TASK, workspace: ws, depth: 0,
+  });
+  const anti = addJob(manifestPath, {
+    worker: "antigravity", model: "gemini-3.7-flash-low",
+    title: "j1", evidence: join(RUN_REL, "w1.md"),
+  });
+  const codex = addJob(manifestPath, {
+    worker: "codex", effort: "medium", title: "j2", evidence: join(RUN_REL, "w2.md"),
+  });
+  t.check("addJob records the model it was given", anti.model, "gemini-3.7-flash-low");
+  t.check("addJob records the Codex effort tier", codex.effort, "medium");
+  const saved = readManifest(manifestPath).jobs;
+  t.check("...and both survive the write", `${saved[0].model}/${saved[1].effort}`, "gemini-3.7-flash-low/medium");
+  t.check("a job given neither is explicit about it", `${saved[0].effort}`, "null");
+}
+
 process.exit(t.finish() ? 0 : 1);

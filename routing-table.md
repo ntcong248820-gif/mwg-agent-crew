@@ -50,11 +50,31 @@ Hệ quả khi dùng app mode:
 
 ## Model
 
-| Runtime | Mặc định | Ghi chú |
-| --- | --- | --- |
-| `agy` | `gemini-3.7-flash-medium` | nhận tên model đầy đủ; đổi sang `gemini-3.1-pro-high` khi việc cần nặng |
-| `agentapi` | `flash` | **chỉ** nhận `flash_lite\|flash\|pro\|inherit`, không nhận tên đầy đủ |
-| Codex | không tự đặt — brief phải truyền `--effort` | `codex-run.mjs`; `-m` để trống cho codex tự chọn. Dùng `medium` cho việc thường, `high` cho việc nhiều bước. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
+Chọn bậc theo **lượng phán đoán cần để đi từ input sang output**, không theo cảm
+giác việc nặng hay nhẹ.
+
+| Loại việc | `agy` (headless) | `agentapi` (app) | Codex |
+| --- | --- | --- | --- |
+| Điền theo mẫu, chuẩn hoá bảng, readback/export Sheet | `gemini-3.7-flash-low` | `flash_lite` | — |
+| Thi hành skill nhiều case, crawl + phân loại theo whitelist | `gemini-3.7-flash-medium` | `flash` | `--effort low` |
+| Suy luận từ dữ liệu sang output chưa có mẫu sẵn | `gemini-3.1-pro-high` | `pro` | `--effort medium` |
+| Code/pipeline nhiều bước, refactor tool | — | — | `--effort high` |
+
+Bậc chỉ là điểm khởi đầu. Job fail vì model yếu thì **nâng đúng 1 bậc và ghi note**,
+không nhảy thẳng lên `pro-high` cho mọi thứ — làm vậy thì lần sau không ai biết việc
+nào thật sự cần bậc cao.
+
+Ràng buộc từng runtime:
+
+| Runtime | Ghi chú |
+| --- | --- |
+| `agy` | nhận tên model đầy đủ; `agy models` liệt kê bản còn sống |
+| `agentapi` | **chỉ** nhận `flash_lite\|flash\|pro\|inherit`, không nhận tên đầy đủ |
+| Codex | `-m` để trống cho codex tự chọn, bậc đặt bằng `--effort`. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
+
+**Không truyền `--model` thì không dispatch.** Trước phase 03, mọi job trong mọi
+manifest đều `"model": null` — knob có mà chưa ai bật, nên không có cách nào đo model
+nào hay fail ngoài đoán. `addJob` ghi `model` (và `effort` cho Codex) để lần sau đo được.
 
 Dispatch Codex đi qua `codex-run.mjs`, **không** qua subagent `codex:codex-rescue`:
 subagent đó là forwarder, không được poll/monitor/lấy kết quả, nên job chết là không ai

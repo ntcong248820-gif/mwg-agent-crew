@@ -206,6 +206,9 @@ export function addJob(manifestPath, job) {
       worker: job.worker,
       mode: job.mode ?? null,
       model: job.model ?? null,
+      // Codex takes its tier as a reasoning effort rather than a model name, so
+      // recording only `model` would leave every Codex job looking unset.
+      effort: job.effort ?? null,
       title: job.title,
       evidence: job.evidence,
       // Path prefixes this job is allowed to write outside tasks/{task}/. Some
