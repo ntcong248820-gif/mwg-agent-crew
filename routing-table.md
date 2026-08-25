@@ -115,6 +115,22 @@ Ba chỗ đã đo và **không** suy diễn được:
 - Thread **hiện trong app Codex**, và 2 job Codex song song thì **hiện đủ 2**, không cái
   nào bị nuốt (đo 25/08, run B). Thread cũng lưu trên đĩa ở
   `~/.codex/sessions/.../rollout-*.jsonl` và resume được bằng `codex resume <id>`.
+- **Nhưng KHÔNG hiện live.** Đo 25/08 bằng một job sống 224 giây: rollout có trên đĩa sau
+  **8 giây**, app vẫn không thấy suốt cả job; phải **tắt app rồi mở lại** mới hiện. Cơ chế
+  khớp dữ liệu (suy luận, chưa đo trực tiếp): app làm chủ backend riêng và chỉ đọc lại
+  session store lúc khởi động, nên thread do backend khác ghi thì nó không hay.
+
+  Hệ quả vận hành, khác nhau rõ giữa hai runtime:
+
+  | | Anti app | Codex app |
+  | --- | --- | --- |
+  | Xem tiến trình lúc job chạy | **Được** — session hiện live trong Antigravity 2.0 | **Không** |
+  | Mở lại sau khi xong | được | được, nhưng phải restart app; hoặc `codex resume <id>` |
+  | Can thiệp giữa chừng | được | không |
+
+  Nên với Codex, `transport: app` mua được **biên bản mở lại được + `conversationId` làm
+  provenance**, không mua được **mặt điều khiển**. Đừng chọn `app` cho Codex vì nghĩ sẽ
+  ngồi xem được.
 - **Cảnh báo cho lần đo sau:** companion `spawn("codex", ["app-server"])`
   (`app-server.mjs:190`) nên process app-server đó *không phải* process của app desktop.
   Từ đó **không** suy ra được thread vắng mặt trong app: app đọc rollout theo yêu cầu, nên
