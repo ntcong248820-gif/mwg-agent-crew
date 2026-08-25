@@ -627,4 +627,35 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   t.check("...and is not asked for a role it never had", `${readManifest(mp).jobs[0].role}`, "undefined");
 }
 
+// --- the gate has to be able to judge an app-transport job ------------------
+{
+  // Ten app-mode jobs exist in history, every one of them from before the
+  // provenance check shipped -- so the gate had never actually judged one. An
+  // app job has no exit code; the thread id is what vouches for it.
+  const { ws, manifestPath } = newRun({
+    jobs: [
+      {
+        worker: "codex", role: "owner", evidence: join(RUN_REL, "app1.md"), body: DONE, status: "done",
+        patch: { conversationId: "01a037ab-924f-7fe1-b76a-9bfd7e329ded", exitCode: null, transportMode: "app" },
+      },
+      {
+        worker: "antigravity", role: "owner", evidence: join(RUN_REL, "app2.md"), body: DONE, status: "done",
+        patch: { conversationId: "8f14e45f-ceea-467a-9e6b-1d2c3a4b5c6d", exitCode: null },
+      },
+    ],
+  });
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a clean app-mode run exits 0", r.exitCode, 0);
+  t.check("...both jobs judged PASS", r.rows.filter((x) => x.verdict === "PASS").length, 2);
+  t.check("...and the thread id counts as provenance", r.rows.some((x) => x.flags.includes("WARN")), "false");
+  t.check("...both recorded as transport app", readManifest(manifestPath).jobs.every((j) => j.transport === "app"), "true");
+
+  // The same job with nothing from the runtime is the case the WARN is for.
+  const bare = newRun({
+    jobs: [{ worker: "codex", role: "owner", evidence: join(RUN_REL, "bare.md"), body: DONE, status: "done" }],
+  });
+  const rb = collectRun(bare.manifestPath, { workspace: bare.ws });
+  t.check("an app job with no thread id still WARNs", rb.rows[0].flags.includes("WARN"), "true");
+}
+
 process.exit(t.finish() ? 0 : 1);

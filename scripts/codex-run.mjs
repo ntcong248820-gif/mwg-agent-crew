@@ -25,9 +25,10 @@
  * The prompt goes in on stdin rather than argv: a brief is a file, and argv has
  * a length limit that a long brief can reach.
  */
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { join, relative, resolve, sep } from "node:path";
+import { resolveCompanion } from "./codex-companion-path.mjs";
 import {
   DEFAULT_TIMEOUT,
   GuardError,
@@ -63,8 +64,22 @@ const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "m
 
 const KNOWN_FLAGS = new Set([
   "prompt", "promptFile", "evidence", "workspace", "timeout", "idle",
-  "model", "effort", "manifest", "job",
+  "model", "effort", "manifest", "job", "mode",
 ]);
+
+/** Same two words the manifest records, so the flag and the record cannot drift. */
+const MODES = new Set(["headless", "app"]);
+
+/**
+ * The companion reports these while a job is still going. Anything else is a
+ * settled job -- `completed`, `failed`, or `cancelled`.
+ */
+const COMPANION_ACTIVE = new Set(["queued", "running"]);
+
+/** Slack on top of the job's own ceiling, so a hung companion still returns. */
+const COMPANION_WAIT_SLACK_MS = 60_000;
+/** Dispatch is a queue insert, not the job: it should answer in seconds. */
+const COMPANION_DISPATCH_TIMEOUT_MS = 120_000;
 
 class CodexRunError extends GuardError {
   constructor(message, detail) {
@@ -156,13 +171,18 @@ function buildArgs({ workspace, model, effort, lastMessagePath }) {
   return args;
 }
 
-export function codexRun(options) {
+/**
+ * Everything both transports need before either one spawns anything. Kept
+ * deliberately small: the two paths share their inputs and their guards, not
+ * their control flow, and pretending otherwise is how one transport's fix
+ * quietly changes the other's behaviour.
+ */
+function prepareRun(options) {
   const workspace = resolve(options.workspace ?? process.cwd());
   const evidenceAbs = validateEvidencePath(options.evidence, workspace);
   const promptText = readPrompt(options);
   const timeout = options.timeout ?? DEFAULT_TIMEOUT;
   const timeoutMs = parseDuration(timeout); // validates against the 30m ceiling
-  const idleMs = options.idle ? parseDuration(options.idle) : DEFAULT_IDLE_MS;
   const effort = options.effort ?? null;
   if (effort && !EFFORTS.has(effort)) {
     throw new CodexRunError(`unknown effort "${effort}"`, `use one of: ${[...EFFORTS].join(", ")}`);
@@ -170,17 +190,21 @@ export function codexRun(options) {
 
   assertEvidenceAbsent(evidenceAbs);
 
-  // The log lives under the task's data/ folder (see resolveLogDir). Both files
-  // are asserted absent for the same reason the evidence is: a retry after an
-  // idle-kill usually happens before any evidence was written, so without this a
-  // second run would append into the first run's log and the two deaths would
-  // read as one.
+  // The log lives under the task's data/ folder (see resolveLogDir).
   const logDir = resolveLogDir(evidenceAbs, workspace);
   mkdirSync(logDir, { recursive: true });
   const base = evidenceAbs.split(sep).pop().replace(/\.md$/, "");
-  const streamPath = join(logDir, `${base}.codex-stream.jsonl`);
-  const lastMessagePath = join(logDir, `${base}.codex-last-message.txt`);
-  for (const sidecar of [streamPath, lastMessagePath]) {
+  return { workspace, evidenceAbs, promptText, timeout, timeoutMs, effort, logDir, base };
+}
+
+/**
+ * Sidecars are asserted absent for the same reason the evidence is: a retry
+ * after an idle-kill usually happens before any evidence was written, so
+ * without this a second run appends into the first run's log and the two deaths
+ * read as one.
+ */
+function assertSidecarsAbsent(paths) {
+  for (const sidecar of paths) {
     if (existsSync(sidecar)) {
       throw new CodexRunError(
         `a sidecar from an earlier run is still there: ${sidecar}`,
@@ -188,6 +212,17 @@ export function codexRun(options) {
       );
     }
   }
+}
+
+export function codexRun(options) {
+  const {
+    workspace, evidenceAbs, promptText, timeout, timeoutMs, effort, logDir, base,
+  } = prepareRun(options);
+  const idleMs = options.idle ? parseDuration(options.idle) : DEFAULT_IDLE_MS;
+
+  const streamPath = join(logDir, `${base}.codex-stream.jsonl`);
+  const lastMessagePath = join(logDir, `${base}.codex-last-message.txt`);
+  assertSidecarsAbsent([streamPath, lastMessagePath]);
 
   const version = codexVersion();
   const args = buildArgs({ workspace, model: options.model, effort, lastMessagePath });
@@ -363,6 +398,187 @@ export function codexRun(options) {
   });
 }
 
+/**
+ * One companion call. Parsed defensively on purpose: this is another project's
+ * CLI, so a field that moved must produce a named error rather than an
+ * `undefined` that travels three functions before it fails.
+ */
+function callCompanion(companion, args, { workspace, timeoutMs, what }) {
+  const proc = spawnSync(process.execPath, [companion, ...args], {
+    cwd: workspace,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    // Same recursion guard as the headless path: the detached worker the
+    // companion spawns inherits this env, so the Codex process running the job
+    // reads the skill as a worker and refuses to dispatch further.
+    env: { ...process.env, MWG_CREW_ROLE: "worker" },
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const stderrTail = String(proc.stderr ?? "").trim().slice(-600);
+  if (proc.error?.code === "ETIMEDOUT" || (proc.signal && proc.status === null)) {
+    throw new CodexRunError(
+      `companion ${what} did not return within ${Math.round(timeoutMs / 1000)}s`,
+      stderrTail || "no stderr",
+    );
+  }
+  if (proc.error) throw new CodexRunError(`could not run the companion: ${proc.error.message}`, companion);
+  if (proc.status !== 0) {
+    throw new CodexRunError(`companion ${what} exited ${proc.status}`, stderrTail || "no stderr");
+  }
+  const raw = String(proc.stdout ?? "");
+  // A future plugin version printing a banner before the JSON must not read as
+  // a protocol break, so fall back to the first brace.
+  const candidates = [raw, raw.slice(raw.indexOf("{"))];
+  for (const text of candidates) {
+    try { return JSON.parse(text); } catch { /* try the next shape */ }
+  }
+  throw new CodexRunError(`companion ${what} did not print JSON`, raw.trim().slice(0, 600));
+}
+
+/**
+ * The app transport: a real thread in the Codex app, which is the whole point --
+ * an owner job is one whose evidence IS the deliverable, so the person who will
+ * be judged on it gets to watch it being made.
+ *
+ * Measured 2026-08-25 against companion 1.0.5, because a parser written from
+ * guesses is how a transport fails silently:
+ *   task --background --json  ->  { jobId, status: "queued", title, summary, logFile }
+ *   status <id> --wait --json ->  { workspaceRoot, job: {...}, waitTimedOut, timeoutMs }
+ *   job.status                ->  queued | running | completed | failed | cancelled
+ *   job.threadId              ->  the app thread, populated by the time it settles
+ *
+ * Unlike Anti's app mode there is a real completion signal here (`--wait`
+ * blocks), so this does not poll the evidence file. The timeout ceiling is still
+ * enforced separately, because `--wait` itself can outlive a dead broker.
+ */
+export async function codexRunApp(options) {
+  const {
+    workspace, evidenceAbs, promptText, timeout, timeoutMs, effort, logDir, base,
+  } = prepareRun(options);
+
+  let companion;
+  try {
+    companion = resolveCompanion();
+  } catch (err) {
+    // Never fall back to headless. A manifest that says `app` while nothing
+    // opened is exactly the silent-substitution failure this harness exists to
+    // catch, and it would be invisible until someone went looking for a thread.
+    throw new CodexRunError(err.message, err.detail);
+  }
+
+  const promptPath = join(logDir, `${base}.codex-app-prompt.md`);
+  const statusPath = join(logDir, `${base}.codex-app-status.json`);
+  assertSidecarsAbsent([promptPath, statusPath]);
+  // The companion reads the prompt from a file, so `--prompt` and
+  // `--prompt-file` both land here and the file doubles as the audit record.
+  writeFileSync(promptPath, promptText, "utf8");
+
+  const version = codexVersion();
+  const startedAt = new Date();
+
+  const dispatchArgs = [
+    "task", "--background", "--json",
+    "--prompt-file", promptPath,
+    "--cwd", workspace,
+    // Always write. Not role-dependent, despite what the plan first said: every
+    // crew job has to write its own evidence file, so a read-only app job could
+    // not satisfy the evidence gate at all. This also keeps the two transports
+    // on one contract -- headless already runs `--sandbox workspace-write`.
+    "--write",
+  ];
+  if (options.model) dispatchArgs.push("-m", options.model);
+  if (effort) dispatchArgs.push("--effort", effort);
+
+  const queued = callCompanion(companion, dispatchArgs, {
+    workspace, timeoutMs: COMPANION_DISPATCH_TIMEOUT_MS, what: "task dispatch",
+  });
+  const jobId = queued?.jobId;
+  if (typeof jobId !== "string" || !jobId) {
+    throw new CodexRunError(
+      "companion dispatch returned no jobId",
+      `got: ${JSON.stringify(queued).slice(0, 400)}`,
+    );
+  }
+  process.stderr.write(`codex-run: app job ${jobId} queued, waiting up to ${timeout}\n`);
+
+  const snapshot = callCompanion(companion, [
+    "status", jobId, "--wait",
+    "--timeout-ms", String(timeoutMs),
+    "--poll-interval-ms", "2000",
+    "--json", "--cwd", workspace,
+  ], { workspace, timeoutMs: timeoutMs + COMPANION_WAIT_SLACK_MS, what: `status --wait for ${jobId}` });
+
+  try {
+    writeFileSync(statusPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  } catch { /* an audit copy must not fail a finished job */ }
+
+  const job = snapshot?.job;
+  if (!job || typeof job.status !== "string") {
+    throw new CodexRunError(
+      "companion status returned no job.status",
+      `got: ${JSON.stringify(snapshot).slice(0, 400)}`,
+    );
+  }
+
+  const timedOut = Boolean(snapshot.waitTimedOut) || COMPANION_ACTIVE.has(job.status);
+  let cancelled = null;
+  if (timedOut) {
+    // Cancel before judging, so a job that outlived its allowance is not left
+    // running against a workspace nobody is watching any more.
+    try {
+      callCompanion(companion, ["cancel", jobId, "--json", "--cwd", workspace], {
+        workspace, timeoutMs: 60_000, what: `cancel ${jobId}`,
+      });
+      cancelled = "cancelled after timeout";
+    } catch (err) {
+      cancelled = `cancel failed: ${err.message}`;
+    }
+    process.stderr.write(`codex-run: ${cancelled}\n`);
+  }
+
+  const runtimeOk = job.status === "completed" && !timedOut;
+  const runtimeDetail = runtimeOk ? null
+    : timedOut ? `companion job did not settle within ${timeout} (status ${job.status}); ${cancelled}`
+    : `companion job ${job.status}${job.errorMessage ? `: ${job.errorMessage}` : ""}`;
+
+  // Evidence gets the first word even here: a job the companion calls `failed`
+  // may still have written a complete report before it fell over. If it wrote
+  // nothing, judgeJob throws and the caller records the failure -- which is the
+  // whole reason this adapter exists.
+  const verdict = judgeJob(evidenceAbs, {
+    runtimeOk,
+    runtimeDetail,
+    context: `codex app job ${jobId}, thread ${job.threadId ?? "none"}, log at ${job.logFile ?? "unknown"}`,
+  });
+
+  const endedAt = new Date().toISOString();
+  return {
+    worker: "codex",
+    mode: "app",
+    model: options.model ?? null,
+    effort,
+    codexVersion: version,
+    startedAt: startedAt.toISOString(),
+    endedAt,
+    durationSec: Math.round((Date.parse(endedAt) - startedAt.getTime()) / 1000),
+    // The provenance field the collect gate already asks about for app-mode
+    // jobs. Reusing it means no new branch in the gate to forget to update.
+    conversationId: job.threadId ?? null,
+    companionJobId: jobId,
+    companionStatus: job.status,
+    turnId: job.turnId ?? null,
+    companionLog: job.logFile ?? null,
+    statusFile: statusPath,
+    prompt: promptPath,
+    // Null, not 0: nothing here exited. The gate reads provenance from
+    // conversationId for app jobs, and a fake 0 would claim a clean exit.
+    exitCode: null,
+    killedFor: timedOut ? runtimeDetail : null,
+    evidence: evidenceAbs,
+    ...verdict,
+  };
+}
+
 export { CodexRunError };
 
 /**
@@ -406,11 +622,16 @@ function needsHuman(result) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   let opts = {};
+  let mode = "headless";
   let result = null;
   // Captured before the job starts so a job that dies still carries a duration.
   const dispatchedAt = new Date().toISOString();
   try {
     opts = parseArgv(process.argv.slice(2));
+    mode = opts.mode ?? "headless";
+    if (!MODES.has(mode)) {
+      throw new CodexRunError(`unknown mode "${mode}"`, `use one of: ${[...MODES].join(", ")}`);
+    }
     // Recorded before the job spawns, not after it returns. A job that is still
     // working has no result to write, so without this the manifest showed it as
     // `pending` with no start time -- and the collect gate cannot tell a live
@@ -418,14 +639,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // it runs. `timeoutMs` goes down here for the same reason: the gate needs
     // this job's own allowance to decide when silence means death.
     if (opts.manifest && opts.job) {
-      const { updateJob } = await import("./crew-manifest.mjs");
+      const { assertTransport, updateJob } = await import("./crew-manifest.mjs");
+      // Before anything is spawned: a job recorded as one transport and fired
+      // down the other leaves a manifest that lies, and the manifest is the only
+      // thing later measurement can read.
+      assertTransport(opts.manifest, Number(opts.job), mode);
       updateJob(opts.manifest, Number(opts.job), {
         status: "running",
         startedAt: dispatchedAt,
         timeoutMs: parseDuration(opts.timeout ?? DEFAULT_TIMEOUT),
       });
     }
-    result = await codexRun(opts);
+    result = mode === "app" ? await codexRunApp(opts) : await codexRun(opts);
   } catch (err) {
     // The whole point of this adapter: a death nobody records reads as "pending"
     // forever, which is exactly what happened on 2026-08-24.
@@ -481,6 +706,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // Recorded so the collect step can find the log without guessing its name.
         stream: result.stream,
         lastMessage: result.lastMessage,
+        // App-transport provenance. Undefined on the headless path, and
+        // JSON.stringify drops undefined, so no headless job grows empty fields.
+        transportMode: result.mode,
+        conversationId: result.conversationId,
+        companionJobId: result.companionJobId,
+        companionStatus: result.companionStatus,
+        companionLog: result.companionLog,
+        turnId: result.turnId,
         notes: result.runtimeVerdict
           ? [...prior, `runtime báo fail (${result.runtimeVerdict}) nhưng evidence tự phán ${result.reportedStatus} — cần người đọc`]
           : prior,

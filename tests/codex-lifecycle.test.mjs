@@ -17,7 +17,7 @@ import { existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createRun, addJob, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
-import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { FIXTURE_BIN, FIXTURES, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const t = makeChecker("codex-lifecycle");
 const ADAPTER = join(MODULE_ROOT, "scripts", "codex-run.mjs");
@@ -28,6 +28,8 @@ const brief = writeFile(join(ws, "brief.md"), "do the thing\n");
 // Larger than the pipe buffer, which is what turns a child that never reads
 // stdin into an EPIPE instead of a harmless short write.
 const bigBrief = writeFile(join(ws, "big-brief.md"), "x".repeat(200_000));
+/** What a worker leaves behind when it did its job: the last line is the verdict. */
+const DONE_BODY = "work\n\nStatus: DONE\nSummary: ok\n";
 
 /** Runs the adapter the way the skill dispatches it, and reports how it ended. */
 function run({ mode, evidence, promptFile = brief, extra = [], timeoutSec = 120 }) {
@@ -149,6 +151,158 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   t.check("the successful retry clears it", after.failure, undefined);
   t.check("...and the job reads as done", after.status, "done");
   t.check("...while the history stays in notes", after.notes.length > 0, "true");
+}
+
+// --- the app transport: a real thread in the Codex app, faked ---------------
+{
+  // The fake exists because these shapes cannot be produced on demand by the
+  // real companion, and because a test that opens real threads costs tokens.
+  // Every case below is a way the transport could fail without saying so.
+  const FAKE = join(FIXTURES, "fake-companion.mjs");
+
+  const runApp = ({ mode, evidence, body = DONE_BODY, extra = [], companion = FAKE, marker = null, timeoutSec = 20 }) => {
+    const proc = spawnSync("node", [
+      ADAPTER,
+      "--mode", "app",
+      "--prompt-file", brief,
+      "--evidence", evidence,
+      "--workspace", ws,
+      "--timeout", `${timeoutSec}s`,
+      "--effort", "low",
+      ...extra,
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${FIXTURE_BIN}:${process.env.PATH}`,
+        FAKE_MODE: "ok",
+        MWG_CODEX_COMPANION: companion,
+        FAKE_COMPANION_MODE: mode,
+        FAKE_COMPANION_EVIDENCE: join(ws, evidence),
+        FAKE_COMPANION_BODY: body,
+        ...(marker ? { FAKE_COMPANION_MARKER: marker } : {}),
+      },
+      timeout: (timeoutSec + 30) * 1000,
+    });
+    return {
+      exit: proc.status,
+      stderr: proc.stderr ?? "",
+      json: (() => { try { return JSON.parse(proc.stdout); } catch { return null; } })(),
+    };
+  };
+
+  const ok = runApp({ mode: "ok", evidence: join(RUN_DIR_REL, "app-ok.md") });
+  t.check("an app job exits 0", ok.exit, 0);
+  t.check("...judged off the evidence", ok.json?.status, "done");
+  t.check("...recorded as the app transport", ok.json?.mode, "app");
+  t.check("...with the thread id as provenance", ok.json?.conversationId, "01a037ab-924f-7fe1-b76a-9bfd7e329ded");
+  t.check("...and no fake exit code claiming a clean exit", `${ok.json?.exitCode}`, "null");
+  t.check("...while the companion job id stays traceable", ok.json?.companionJobId, "task-fake-0001");
+
+  // Doctrine: evidence on disk outranks the runtime's verdict, including failed.
+  const failed = runApp({ mode: "failed", evidence: join(RUN_DIR_REL, "app-failed.md") });
+  t.check("companion says failed but the evidence stands", failed.json?.status, "done");
+  t.check("...and the disagreement is surfaced, not resolved", Boolean(failed.json?.runtimeVerdict), "true");
+  t.check("...so it exits 3, not 0", failed.exit, 3);
+
+  // A job that outlives its allowance must be cancelled, not left running
+  // against a workspace nobody is watching.
+  const marker = join(ws, "cancel-marker.txt");
+  const mfDir = join(ws, RUN_DIR_REL, "app-timeout-case");
+  const { manifestPath: tmp } = createRun({ runDir: mfDir, runId: "app-to", task: "t", workspace: ws, depth: 0 });
+  addJob(tmp, {
+    worker: "codex", role: "owner", title: "app timeout",
+    evidence: join(RUN_DIR_REL, "app-timeout-case", "late.md"),
+  });
+  const timedOut = runApp({
+    mode: "timeout", body: "", marker,
+    evidence: join(RUN_DIR_REL, "app-timeout-case", "late.md"),
+    extra: ["--manifest", tmp, "--job", "1"],
+  });
+  t.check("a job that never settles fails", timedOut.exit, 1);
+  t.check("...and cancel was actually called", readFileSync(marker, "utf8").includes("cancel"), "true");
+  const toJob = readManifest(tmp).jobs[0];
+  t.check("...with a failure the manifest can show", Boolean(toJob.failure), "true");
+  t.check("...naming the transport that stalled", toJob.failure.includes("companion job did not settle"), "true");
+
+  const noId = runApp({ mode: "no_job_id", evidence: join(RUN_DIR_REL, "app-noid.md") });
+  t.check("a dispatch with no jobId is refused", noId.exit, 1);
+  t.check("...naming the field that is missing", noId.stderr.includes("no jobId"), "true");
+
+  const garbage = runApp({ mode: "not_json", evidence: join(RUN_DIR_REL, "app-garbage.md") });
+  t.check("non-JSON output is refused", garbage.exit, 1);
+  t.check("...instead of an undefined travelling downstream", garbage.stderr.includes("did not print JSON"), "true");
+
+  const crashed = runApp({ mode: "crash", evidence: join(RUN_DIR_REL, "app-crash.md") });
+  t.check("a companion that exits non-zero fails the job", crashed.exit, 1);
+  t.check("...quoting its stderr", crashed.stderr.includes("codex is not available"), "true");
+
+  // Falling back to headless here would be the silent substitution this whole
+  // harness exists to catch: the manifest would say app, no thread would open.
+  const missing = runApp({
+    mode: "ok", companion: join(ws, "nope", "codex-companion.mjs"),
+    evidence: join(RUN_DIR_REL, "app-missing.md"),
+  });
+  t.check("a companion that is not there fails loudly", missing.exit, 1);
+  t.check("...listing where it looked", missing.stderr.includes("probed:"), "true");
+  // The override is authoritative: searching past a path someone named would
+  // hand them a different companion than the one they asked for -- and this
+  // test proved it, by reaching the real install on the first attempt.
+  t.check("...saying the override is the thing to fix", missing.stderr.includes("MWG_CODEX_COMPANION points at nothing"), "true");
+  t.check("...and never falling back to headless", missing.json, "null");
+}
+
+// --- the manifest and the flag must agree on the transport ------------------
+{
+  // The manifest is the only record later measurement can read, so a job filed
+  // as one transport and fired down the other is worse than no record at all.
+  const dir = join(ws, RUN_DIR_REL, "transport-clash");
+  const { manifestPath: mp } = createRun({ runDir: dir, runId: "clash", task: "t", workspace: ws, depth: 0 });
+  addJob(mp, {
+    worker: "codex", role: "owner", title: "filed as app",
+    evidence: join(RUN_DIR_REL, "transport-clash", "w.md"),
+  });
+  const clash = run({
+    mode: "ok", evidence: join(RUN_DIR_REL, "transport-clash", "w.md"),
+    extra: ["--manifest", mp, "--job", "1"],
+  });
+  t.check("dispatching headless against an app job is refused", clash.exit, 1);
+  t.check("...naming both sides of the disagreement", clash.stderr.includes('recorded as transport "app"'), "true");
+  // Refused before spawning, and the refusal is on the record: a clash left as
+  // `pending` would read as a job that never launched, which is the shape the
+  // gate treats as lost rather than as something an operator has to fix.
+  t.check("...with nothing written at the evidence path", existsSync(join(ws, RUN_DIR_REL, "transport-clash", "w.md")), "false");
+  t.check("...and the refusal on the record", readManifest(mp).jobs[0].failure.includes("recorded as transport"), "true");
+}
+
+// --- finding the companion, which lives outside this repo -------------------
+{
+  const { companionCandidates, resolveCompanion } = await import("../scripts/codex-companion-path.mjs");
+  const home = join(ws, "home");
+  const marketplace = join(home, ".claude", "plugins", "marketplaces", "openai-codex", "plugins", "codex", "scripts", "codex-companion.mjs");
+
+  const order = companionCandidates({ CLAUDE_PLUGIN_ROOT: join(ws, "plug") }, home);
+  t.check("the plugin root is probed before the marketplace", order[0], join(ws, "plug", "scripts", "codex-companion.mjs"));
+  t.check("...and the marketplace path is the fallback", order[1], marketplace);
+  // The cache path carries a version segment, so probing it would mean sorting
+  // semver to pick "the newest" -- and the newest copy on disk is not
+  // necessarily the one running.
+  t.check("the versioned cache path is not probed at all", order.some((x) => x.includes("plugins/cache")), "false");
+
+  writeFile(marketplace, "// stand-in\n");
+  t.check("the marketplace install is found", resolveCompanion({}, home), marketplace);
+
+  const explicit = writeFile(join(ws, "elsewhere", "codex-companion.mjs"), "// stand-in\n");
+  t.check("an explicit override wins", resolveCompanion({ MWG_CODEX_COMPANION: explicit }, home), explicit);
+
+  let msg = "no throw";
+  try { resolveCompanion({ MWG_CODEX_COMPANION: join(ws, "gone.mjs") }, home); } catch (err) { msg = err.message; }
+  t.check("an override that points at nothing throws", msg, "MWG_CODEX_COMPANION points at nothing");
+
+  msg = "no throw";
+  try { resolveCompanion({}, join(ws, "empty-home")); } catch (err) { msg = `${err.message}|${err.detail}`; }
+  t.check("nothing found says so", msg.startsWith("could not find codex-companion.mjs"), "true");
+  t.check("...and lists the paths it tried", msg.includes("probed:"), "true");
 }
 
 process.exit(t.finish() ? 0 : 1);

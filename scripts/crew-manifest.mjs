@@ -341,6 +341,28 @@ export function updateJob(manifestPath, seq, patch) {
   return updated;
 }
 
+/**
+ * Refuses to dispatch down a transport the manifest did not record.
+ *
+ * The manifest is the only place a run's shape survives, and phase-3 style
+ * measurement reads it back -- so a job recorded as `app` and then fired
+ * headless is worse than no record at all. Version-gated for the usual reason:
+ * a manifest written before `transport` existed cannot be asked about it.
+ */
+export function assertTransport(manifestPath, seq, mode) {
+  const manifest = readManifest(manifestPath);
+  if (!(manifest.version >= 3)) return null;
+  const job = manifest.jobs.find((j) => j.seq === seq);
+  if (!job || job.transport == null) return null;
+  if (job.transport !== mode) {
+    throw new ManifestError(
+      `job ${seq} is recorded as transport "${job.transport}" but was dispatched as "${mode}"\n` +
+      `  → fix the flag, or fix the manifest; do not leave the two disagreeing`,
+    );
+  }
+  return job.transport;
+}
+
 export { ManifestError };
 
 if (import.meta.url === `file://${process.argv[1]}`) {

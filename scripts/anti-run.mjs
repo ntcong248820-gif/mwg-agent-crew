@@ -330,7 +330,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // it runs. `timeoutMs` goes down here for the same reason: the gate needs
     // this job's own allowance to decide when silence means death.
     if (opts.manifest && opts.job) {
-      const { updateJob } = await import("./crew-manifest.mjs");
+      const { assertTransport, updateJob } = await import("./crew-manifest.mjs");
+      // Before anything is spawned: a job recorded as one transport and fired
+      // down the other leaves a manifest that lies, and the manifest is the only
+      // thing later measurement can read.
+      assertTransport(opts.manifest, Number(opts.job), opts.mode ?? "headless");
       updateJob(opts.manifest, Number(opts.job), {
         status: "running",
         startedAt: dispatchedAt,

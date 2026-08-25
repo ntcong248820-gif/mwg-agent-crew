@@ -46,7 +46,8 @@ chỉ trỏ vào.
 | --- | --- |
 | `scripts/anti-env.mjs` | Discover runtime của app Antigravity 2.0 (pid, gRPC address, projectId). Không hardcode giá trị nào; app restart thì tự discover lại. |
 | `scripts/anti-run.mjs` | Chạy 1 job Antigravity. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). |
-| `scripts/codex-run.mjs` | Chạy 1 job Codex qua `codex exec --json`. Watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. Log stream ghi vào `tasks/{task}/data/crew-logs/{run}/` — thuộc `data/` vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest. |
+| `scripts/codex-run.mjs` | Chạy 1 job Codex. `--mode headless` (mặc định) qua `codex exec --json`, watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. `--mode app` mở thread thật trong app Codex qua companion của plugin. Log ghi vào `tasks/{task}/data/crew-logs/{run}/` — thuộc `data/` vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest. |
+| `scripts/codex-companion-path.mjs` | Tìm `codex-companion.mjs` của plugin Codex (ngoài repo). Env override `MWG_CODEX_COMPANION` là **quyết định cuối** — trỏ sai thì báo lỗi, không dò tiếp sang bản khác. |
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
 | `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock có owner token nên nhiều job kết thúc cùng lúc không mất update. |
@@ -59,6 +60,14 @@ node mwg-agent-crew/scripts/codex-run.mjs \
   --prompt-file <brief.md> \
   --evidence tasks/<task>/reports/<job>.md \
   --timeout 15m --idle-timeout 2m --effort medium --workspace "$PWD" \
+  --manifest <run>/manifest.json --job 2
+```
+
+```bash
+node mwg-agent-crew/scripts/codex-run.mjs --mode app \
+  --prompt-file <brief.md> \
+  --evidence tasks/<task>/reports/<job>.md \
+  --timeout 15m --effort medium --workspace "$PWD" \
   --manifest <run>/manifest.json --job 2
 ```
 
@@ -78,6 +87,25 @@ node mwg-agent-crew/scripts/crew-reconcile.mjs <run>/manifest.json [--dry-run]
 node mwg-agent-crew/scripts/crew-collect.mjs <run>/manifest.json \
   [--abandon <seq>] [--grace <ms>] [--dry-run]
 ```
+
+### Hai app mode không giống nhau, đừng suy từ cái này sang cái kia
+
+Anti app **không** có completion callback, nên `anti-run.mjs` lấy file evidence làm
+tín hiệu hoàn thành (step status là enum không tài liệu, do app sở hữu, và đã từng gọi
+một job xong rồi là "đang chạy" suốt 8 phút).
+
+Codex app **có** tín hiệu thật: `status <jobId> --wait` chặn tới khi job settle. Nên
+`codex-run.mjs --mode app` không poll evidence. Trần timeout vẫn giữ riêng, vì `--wait`
+cũng treo được nếu broker chết — hết trần thì `cancel` rồi mới báo lỗi, để không bỏ lại
+job chạy hoang.
+
+Chỗ hai đường **giống** nhau và phải giữ giống: phán quyết đến từ evidence. Companion
+báo `failed` mà evidence đủ và hợp lệ thì verdict vẫn `done`, kèm cảnh báo bất đồng cho
+người đọc. Đó là nguyên tắc 2 — evidence trên đĩa outrank verdict của runtime.
+
+Và không bao giờ rơi ngầm sang transport khác. Không tìm được companion là **lỗi**, chứ
+không phải lý do để chạy headless: manifest sẽ ghi `app`, không thread nào mở, và không
+ai biết bên nào nói dối.
 
 ### Phạm vi ghi đo bằng thời gian, không bằng diff
 

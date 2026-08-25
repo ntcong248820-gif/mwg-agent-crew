@@ -57,7 +57,7 @@ ghi transport vào đó là ghi một box chat chưa từng mở.
 | Transport | Cơ chế | Có stdout? |
 | --- | --- | --- |
 | `headless` | Anti: `agy -p --output-format json`. Codex: `codex exec` | **Có** — trả về Claude |
-| `app` | Anti: `agentapi new-conversation` → session hiện trong Antigravity 2.0, adapter poll bằng file evidence. Codex: companion `task --background` → thread thật trong app | Anti **không**; Codex **có** (`result <job-id>`) |
+| `app` | Anti: `agentapi new-conversation` → session hiện trong Antigravity 2.0, adapter poll bằng file evidence. Codex: `codex-run.mjs --mode app` → companion `task --background` → thread thật trong app, chờ bằng `status --wait` | Anti **không**; Codex **có** (`result <job-id>`) |
 
 Hai runtime lệch nhau chỗ stdout — đừng suy từ Anti sang Codex. Cả hai đều lấy **file
 evidence** làm phán quyết, stdout chỉ là tiện.
@@ -76,6 +76,33 @@ Hệ quả khi dùng app mode:
 - Job app từng dừng hẳn sau 1 tool call mà không ghi gì (conversation 6 step, không có
   error, không có permission blob). Evidence gate bắt được. Đừng giao việc bắt buộc phải
   ra file cho app mode nếu không ai ngồi xem.
+
+### Codex app transport — đo 2026-08-25
+
+Đường vào app của Codex là `codex-companion.mjs` trong plugin `codex-plugin-cc`, gọi
+**thẳng**, không qua subagent. Hình dạng đã đo với companion 1.0.5:
+
+| Lệnh | Trả về |
+| --- | --- |
+| `task --background --json` | `{ jobId, status:"queued", title, summary, logFile }` |
+| `status <id> --wait --json` | `{ workspaceRoot, job, waitTimedOut, timeoutMs }` |
+| `job.status` | `queued` / `running` / `completed` / `failed` / `cancelled` |
+| `job.threadId` | id thread trong app — đã có sẵn lúc job settle, dùng làm `conversationId` |
+
+Khác app mode của Anti ở một chỗ quan trọng: Codex **có tín hiệu hoàn thành thật**
+(`--wait` chặn tới khi settle), nên adapter không phải poll file evidence để đoán. Trần
+timeout vẫn giữ riêng vì `--wait` cũng treo được nếu broker chết; hết trần thì gọi
+`cancel` trước khi báo lỗi.
+
+Ba chỗ đã đo và **không** suy diễn được:
+
+- Thread luôn tên `"Codex Task"`, không có cờ đặt tên. Cái phân biệt là `summary` =
+  dòng đầu brief. Nên dòng đầu brief phải là title job.
+- `sessionRuntime.mode` trong `status --json` cho biết đang dùng broker chia sẻ
+  (`shared`) hay kết nối riêng (`direct`). Đo trên máy này: `direct`, chưa có broker nào
+  chạy — nên tình huống `BROKER_BUSY` chưa xảy ra ở đường crew.
+- `--write` là **bắt buộc**, không theo `role`: mọi job crew đều phải tự ghi file
+  evidence, nên app mode read-only thì không job nào qua được cổng evidence.
 
 ## Model
 
