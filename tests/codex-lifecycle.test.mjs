@@ -160,7 +160,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   // Every case below is a way the transport could fail without saying so.
   const FAKE = join(FIXTURES, "fake-companion.mjs");
 
-  const runApp = ({ mode, evidence, body = DONE_BODY, extra = [], companion = FAKE, marker = null, timeoutSec = 20 }) => {
+  const runApp = ({ mode, evidence, body = DONE_BODY, extra = [], companion = FAKE, marker = null, timeoutSec = 20, result = null }) => {
     const proc = spawnSync("node", [
       ADAPTER,
       "--mode", "app",
@@ -180,6 +180,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
         FAKE_COMPANION_MODE: mode,
         FAKE_COMPANION_EVIDENCE: join(ws, evidence),
         FAKE_COMPANION_BODY: body,
+        ...(result ? { FAKE_COMPANION_RESULT: result } : {}),
         ...(marker ? { FAKE_COMPANION_MARKER: marker } : {}),
       },
       timeout: (timeoutSec + 30) * 1000,
@@ -199,6 +200,23 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   t.check("...and no fake exit code claiming a clean exit", `${ok.json?.exitCode}`, "null");
   t.check("...while the companion job id stays traceable", ok.json?.companionJobId, "task-fake-0001");
 
+  // The gap this transport had next to headless: the job ran, the evidence was
+  // judged, and what the worker actually said was thrown away.
+  t.check("...the worker's reply is fetched and filed", Boolean(ok.json?.lastMessage), "true");
+  t.check("...with text in it", readFileSync(ok.json.lastMessage, "utf8").includes("Đã ghi evidence"), "true");
+  t.check("...no reply error on the happy path", `${ok.json?.replyError}`, "null");
+  t.check("...the companion's own exit status is recorded", ok.json?.companionExitStatus, 0);
+  t.check("...separately from exitCode, which the gate reads", `${ok.json?.exitCode}`, "null");
+  t.check("...and the files the runtime says it wrote", ok.json?.touchedFiles?.length, 1);
+
+  // Three ways the reply can be lost. None of them is a failed job: the
+  // evidence already decided that, and a thinner record is not a failure.
+  for (const [rmode, label] of [["crash", "result exits non-zero"], ["empty", "result is empty"], ["no_result", "result has no stored result"]]) {
+    const r = runApp({ mode: "ok", result: rmode, evidence: join(RUN_DIR_REL, `app-reply-${rmode}.md`) });
+    t.check(`a job whose ${label} still exits 0`, r.exit, 0);
+    t.check(`...${label}: no reply file claimed`, `${r.json?.lastMessage}`, "null");
+    t.check(`...${label}: and the reason is on the record`, Boolean(r.json?.replyError), "true");
+  }
 
   // Doctrine: evidence on disk outranks the runtime's verdict, including failed.
   const failed = runApp({ mode: "failed", evidence: join(RUN_DIR_REL, "app-failed.md") });

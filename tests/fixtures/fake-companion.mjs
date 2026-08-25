@@ -11,9 +11,14 @@
  * contract, which is exactly what nearly shipped:
  *   task --background --json  ->  { jobId, status, title, summary, logFile }
  *   status <id> --wait --json ->  { workspaceRoot, job, waitTimedOut, timeoutMs }
+ *   result <id> --json        ->  { job, storedJob: { ..., result, rendered } }
+ *   storedJob.result          ->  { status, threadId, rawOutput, touchedFiles, reasoningSummary }
  *
  * Driven by env so the adapter's own argv stays untouched:
  *   FAKE_COMPANION_MODE     ok | failed | timeout | no_job_id | not_json | crash
+ *   FAKE_COMPANION_RESULT   ok (default) | empty | crash | no_result
+ *                           -- the reply lookup fails independently of the job,
+ *                              because a job can succeed and still lose its text
  *   FAKE_COMPANION_EVIDENCE absolute path the fake "worker" writes
  *   FAKE_COMPANION_BODY     what it writes there ("" writes nothing)
  *   FAKE_COMPANION_MARKER   file that records which subcommands were called
@@ -72,6 +77,31 @@ if (cmd === "status") {
     },
     waitTimedOut: active,
     timeoutMs: Number(rest[rest.indexOf("--timeout-ms") + 1]) || 0,
+  });
+}
+
+if (cmd === "result") {
+  const rmode = process.env.FAKE_COMPANION_RESULT ?? "ok";
+  if (rmode === "crash") {
+    process.stderr.write(`fake-companion: no job found for "${rest[0]}"\n`);
+    process.exit(1);
+  }
+  // A payload with no storedJob.result is its own case: the companion answered,
+  // it just has nothing stored for this job.
+  if (rmode === "no_result") say({ job: { id: JOB_ID }, storedJob: { id: JOB_ID } });
+  say({
+    job: { id: JOB_ID, status: "completed", threadId: THREAD_ID },
+    storedJob: {
+      id: JOB_ID,
+      result: {
+        status: 0,
+        threadId: THREAD_ID,
+        rawOutput: rmode === "empty" ? "" : "Xong. Đã ghi evidence.\n\n- Status: DONE\n",
+        touchedFiles: rmode === "empty" ? [] : [process.env.FAKE_COMPANION_EVIDENCE ?? "/tmp/fake-evidence.md"],
+        reasoningSummary: [],
+      },
+      rendered: rmode === "empty" ? "" : "Xong. Đã ghi evidence.\n\nResume in Codex: codex resume x\n",
+    },
   });
 }
 

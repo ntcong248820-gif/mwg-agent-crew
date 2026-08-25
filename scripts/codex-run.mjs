@@ -80,6 +80,15 @@ const COMPANION_ACTIVE = new Set(["queued", "running"]);
 const COMPANION_WAIT_SLACK_MS = 60_000;
 /** Dispatch is a queue insert, not the job: it should answer in seconds. */
 const COMPANION_DISPATCH_TIMEOUT_MS = 120_000;
+/**
+ * `result` reads a finished job out of the companion's own store, so it is a
+ * lookup, not work. Kept short and deliberately non-fatal: the reply text is a
+ * record, and a job that already wrote valid evidence must not be failed for
+ * losing it.
+ */
+const COMPANION_RESULT_TIMEOUT_MS = 30_000;
+/** Same reasoning as MAX_EVENT_BYTES: a truncated reply still says what happened. */
+const MAX_REPLY_BYTES = 32 * 1024;
 
 class CodexRunError extends GuardError {
   constructor(message, detail) {
@@ -450,7 +459,74 @@ function callCompanion(companion, args, { workspace, timeoutMs, what }) {
  * Unlike Anti's app mode there is a real completion signal here (`--wait`
  * blocks), so this does not poll the evidence file. The timeout ceiling is still
  * enforced separately, because `--wait` itself can outlive a dead broker.
+ *
+ * After settling it asks `result` for what the worker said -- see
+ * fetchCompanionReply. Skipping that step was this transport's real gap next to
+ * headless: the job ran, the evidence was judged, and the answer was discarded.
  */
+/**
+ * Brings a finished app job's reply text back, the way `-o lastMessagePath`
+ * already does on the headless path. Without this the app transport threw the
+ * worker's answer away: the adapter waited for the job, judged the evidence,
+ * and never asked what the worker actually said.
+ *
+ * Measured against companion 1.0.5 on 2026-08-25, on two real settled jobs:
+ *   result <id> --json -> { job: {...}, storedJob: { ..., result, rendered } }
+ *   storedJob.result   -> { status, threadId, rawOutput, touchedFiles, reasoningSummary }
+ *   storedJob.rendered -> rawOutput plus the companion's "resume in Codex" footer
+ *
+ * `rawOutput` is taken over `rendered` because the footer is the companion
+ * talking to a human, not the worker's answer.
+ *
+ * Two things measured here that the plan did not expect. `result.status` is a
+ * real exit status (0 on both jobs), so "nothing here exited" was too strong --
+ * but what it holds on a failed job is unmeasured, so it goes in a field of its
+ * own rather than into `exitCode`, where the gate would read it. And
+ * `result.touchedFiles` is a per-job list of files the runtime says it wrote:
+ * an authorship signal the write-scope gate currently has no access to.
+ *
+ * Every failure here is recorded and swallowed. A missing reply is a thinner
+ * record; it is not a failed job.
+ */
+function fetchCompanionReply(companion, jobId, { workspace, replyPath }) {
+  const out = { lastMessage: null, companionExitStatus: null, touchedFiles: null, replyError: null };
+  let payload;
+  try {
+    payload = callCompanion(companion, ["result", jobId, "--json", "--cwd", workspace], {
+      workspace, timeoutMs: COMPANION_RESULT_TIMEOUT_MS, what: `result ${jobId}`,
+    });
+  } catch (err) {
+    out.replyError = `result unavailable: ${err.message}`;
+    return out;
+  }
+
+  const r = payload?.storedJob?.result;
+  if (!r || typeof r !== "object") {
+    out.replyError = `result returned no storedJob.result (got keys: ${Object.keys(payload ?? {}).join(", ") || "none"})`;
+    return out;
+  }
+  if (typeof r.status === "number") out.companionExitStatus = r.status;
+  if (Array.isArray(r.touchedFiles)) out.touchedFiles = r.touchedFiles;
+
+  const text = typeof r.rawOutput === "string" && r.rawOutput.trim()
+    ? r.rawOutput
+    : (typeof payload.storedJob.rendered === "string" ? payload.storedJob.rendered : "");
+  if (!text.trim()) {
+    out.replyError = "companion returned an empty reply";
+    return out;
+  }
+  const capped = Buffer.byteLength(text, "utf8") > MAX_REPLY_BYTES
+    ? `${text.slice(0, MAX_REPLY_BYTES)}\n…[crew: cắt phần còn lại]\n`
+    : text;
+  try {
+    writeFileSync(replyPath, capped.endsWith("\n") ? capped : `${capped}\n`, "utf8");
+    out.lastMessage = replyPath;
+  } catch (err) {
+    out.replyError = `could not write reply file: ${err.message}`;
+  }
+  return out;
+}
+
 export async function codexRunApp(options) {
   const {
     workspace, evidenceAbs, promptText, timeout, timeoutMs, effort, logDir, base,
@@ -468,7 +544,8 @@ export async function codexRunApp(options) {
 
   const promptPath = join(logDir, `${base}.codex-app-prompt.md`);
   const statusPath = join(logDir, `${base}.codex-app-status.json`);
-  assertSidecarsAbsent([promptPath, statusPath]);
+  const replyPath = join(logDir, `${base}.codex-app-reply.md`);
+  assertSidecarsAbsent([promptPath, statusPath, replyPath]);
   // The companion reads the prompt from a file, so `--prompt` and
   // `--prompt-file` both land here and the file doubles as the audit record.
   writeFileSync(promptPath, promptText, "utf8");
@@ -536,6 +613,14 @@ export async function codexRunApp(options) {
     process.stderr.write(`codex-run: ${cancelled}\n`);
   }
 
+  // Asked for even on a job the companion calls failed, and even after a
+  // cancel: whatever the worker managed to say before it stopped is the most
+  // useful thing there is for working out why. What `result` returns in those
+  // two cases is not measured -- no failed or cancelled job existed in the
+  // companion's store to probe -- so the call is written to tolerate anything.
+  const reply = fetchCompanionReply(companion, jobId, { workspace, replyPath });
+  if (reply.replyError) process.stderr.write(`codex-run: ${reply.replyError}\n`);
+
   const runtimeOk = job.status === "completed" && !timedOut;
   const runtimeDetail = runtimeOk ? null
     : timedOut ? `companion job did not settle within ${timeout} (status ${job.status}); ${cancelled}`
@@ -570,8 +655,18 @@ export async function codexRunApp(options) {
     companionLog: job.logFile ?? null,
     statusFile: statusPath,
     prompt: promptPath,
-    // Null, not 0: nothing here exited. The gate reads provenance from
-    // conversationId for app jobs, and a fake 0 would claim a clean exit.
+    // Same field the headless path uses for the worker's final message, so the
+    // collect step reads one name for both transports.
+    lastMessage: reply.lastMessage,
+    // The companion's own exit status for the codex run, and the files it says
+    // it wrote. Kept separate from `exitCode` because the gate reads that one,
+    // and what this holds on a failed job has not been measured.
+    companionExitStatus: reply.companionExitStatus,
+    touchedFiles: reply.touchedFiles,
+    replyError: reply.replyError,
+    // Null, not 0: this adapter did not spawn the process that exited. The gate
+    // reads provenance from conversationId for app jobs, and a fake 0 here
+    // would claim a clean exit on behalf of something it never watched.
     exitCode: null,
     killedFor: timedOut ? runtimeDetail : null,
     evidence: evidenceAbs,
@@ -714,6 +809,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         companionStatus: result.companionStatus,
         companionLog: result.companionLog,
         turnId: result.turnId,
+        // App transport only: the companion's exit status for the codex run,
+        // the file list it says it wrote, and why the reply is missing when it
+        // is. All three are record, not verdict.
+        companionExitStatus: result.companionExitStatus,
+        touchedFiles: result.touchedFiles,
+        replyError: result.replyError,
         notes: result.runtimeVerdict
           ? [...prior, `runtime báo fail (${result.runtimeVerdict}) nhưng evidence tự phán ${result.reportedStatus} — cần người đọc`]
           : prior,

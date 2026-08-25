@@ -101,6 +101,25 @@ Hệ quả khi dùng app mode:
   error, không có permission blob). Evidence gate bắt được. Đừng giao việc bắt buộc phải
   ra file cho app mode nếu không ai ngồi xem.
 
+### `result` của companion — đo 2026-08-25 (bản 1.0.5)
+
+`codex-run.mjs --mode app` giờ gọi `result <job-id>` sau khi job settle. Hình dạng thật:
+
+| Field | Là gì |
+| --- | --- |
+| `storedJob.result.rawOutput` | Câu trả lời của worker. Đây là cái adapter lưu, ghi ra `{job}.codex-app-reply.md`, manifest trỏ qua `lastMessage` |
+| `storedJob.rendered` | Cùng nội dung + footer "Resume in Codex" của companion. Fallback khi `rawOutput` rỗng |
+| `storedJob.result.status` | **Exit status thật** (0 trên cả 2 job đo được). Ghi vào `companionExitStatus`, **không** vào `exitCode` — job fail trả gì thì chưa đo được |
+| `storedJob.result.touchedFiles` | **Danh sách file runtime tự khai đã ghi**, per-job. Job thật 25/08 trả đúng 1 file khớp evidence path |
+| `job.summary` vs `storedJob.summary` | Hai thứ khác nhau: `job.summary` là trích câu trả lời; `storedJob.summary` là dòng đầu brief bị cắt. Cái app hiển thị là `storedJob.summary` |
+
+`touchedFiles` là tín hiệu tác giả mà cổng write-scope hôm nay không có. Nó quy kết bằng
+mtime, nên một session khác sửa file trong lúc run là gate báo oan — đúng ca Run A exit 2
+ngày 25/08.
+
+Mọi lỗi của `result` đều **không** làm job fail: ghi vào `replyError` rồi đi tiếp. Job đã
+ghi evidence hợp lệ thì không được fail vì mất phần ghi chép.
+
 ### Ba job app song song — đo 2026-08-25
 
 3 job app cùng lúc (2 Codex `--effort low` + 1 Anti `flash`): 3/3 xong, **0 job mất,
