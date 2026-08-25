@@ -40,6 +40,24 @@ chỉ trỏ vào.
 | Env xuyên xuống tool con của `agy` | **Có** — `MWG_CREW_ROLE=worker` tới được shell của agent |
 | Codex + Anti đồng thời | **OK** — 1 Codex + 3 Anti, không ai fail |
 
+### Chốt của sổ gốc: cái gì sửa được, cái gì không
+
+Rà ngày 25/08 tìm ra bảy lỗ trong `crew-manifest.mjs`, tất cả cùng một dạng: chốt
+canh field **bên cạnh** field quan trọng.
+
+| Lỗ | Sửa |
+| --- | --- |
+| `MWG_CREW_ROLE=worker` chỉ chặn `depth === 0`, nên worker gọi `createRun({depth:1})` là lách được cả hai nửa của guard | Worker không được mở run ở **bất kỳ** depth nào |
+| `evidence` nhận path tuyệt đối, nên `/tmp/old-pass.md` có dòng `Status: DONE` được đọc **như bằng chứng thật** — và scope gate chỉ soi working tree nên không thấy | Evidence phải là path tương đối, nằm dưới `tasks/` |
+| `job.extra` spread cuối, ghi đè được `transport` vừa validate — và `assertTransport` bỏ qua khi transport là null, nên adapter cũng thôi kiểm | `extra` không được chạm 7 field đã niêm |
+| `updateJob` sửa được `seq`, làm hai job trùng seq và `jobs.find` lấy sai con | Patch được tiến độ, không được danh tính |
+| version 0 hoặc âm đọc như "manifest cũ", tắt luôn cảnh báo provenance chỉ bật từ version 2 | Dưới 1 là manifest hỏng, không phải manifest cũ |
+| `filesMayModify` là string thì scope gate gọi `.map` và chết giữa lúc collect | Phải là mảng string |
+| Lock quá 60s bị thu hồi, nhưng holder cũ vẫn ghi đè bản của kẻ kế nhiệm | Mất lock là mất quyền ghi — kiểm lại chủ ngay trước khi ghi |
+
+Nguyên tắc rút ra: **validate rồi cho ghi đè thì không phải chốt.** Bốn trong bảy lỗ
+trên đều là dạng đó.
+
 ### `MWG_CREW_ROLE` là tín hiệu, `depth` là chốt
 
 Đo 25/08: cả hai worker Codex đều không chạy được bộ test của module, vì
@@ -50,6 +68,10 @@ Không nới chốt đó. Nhưng phải nói thẳng ranh giới thật: env var
 một agent chịu hợp tác, không phải hàng rào — agent nào cũng unset được nó. Chốt
 thật là `depth` trong manifest: `depth > 1` bị từ chối, và cái đó nằm trên đĩa, worker
 không sửa được bằng env.
+
+Đính chính 25/08: lúc đầu câu trên nói quá. `depth` lúc đó **chưa** kín — guard
+`MWG_CREW_ROLE` chỉ soi `depth === 0`, nên một worker xin `depth: 1` đi qua được cả
+hai nửa. Đã sửa: worker không mở được run ở bất kỳ depth nào.
 
 Quyết ngày 25/08: brief nào cần chạy test module thì **cấp sẵn nguyên văn** lệnh
 `env -u MWG_CREW_ROLE ...` ở mục `## Lệnh được cấp sẵn`, chỉ cho đúng lệnh test.
@@ -209,6 +231,34 @@ thúc bằng `/` và chỉ áp cho **chính job đã khai** — khai `docs` khô
 3 không phải bậc nặng hơn 2. Trước đó hai loại vấn đề gộp vào một mã, nên người
 vừa dọn xong đống file ngoài phạm vi thấy gate hết đỏ và tưởng run đã sạch —
 trong khi vẫn còn job chưa ai xử.
+
+### Adapter chết thì cũng phải tự ghi
+
+Adapter tồn tại để một cái chết được ghi lại thay vì đọc là `pending` mãi. Rà 25/08
+chỉ ra cái chết duy nhất không ai ghi: **của chính adapter**. `SIGTERM` không đi qua
+`try/catch` — Node thoát ngay, để lại đúng cái job nó vừa đánh dấu `running`.
+
+Đã thêm handler cho `SIGTERM`/`SIGINT`/`SIGHUP`: ghi job là `failed` kèm tên signal,
+rồi thoát bằng mã `128 + signo`. Ghi đồng bộ, vì trong signal handler không có `await`
+— nên `updateJob` được import tĩnh riêng cho đường này.
+
+**Handler này chỉ với tới đường `headless`.** Đo được khi viết test: đường `app` chờ
+bên trong `spawnSync`, mà `spawnSync` khoá event loop — nên Node không giao được signal
+cho handler nào cho tới khi lệnh đó trả về. Đây là giới hạn thật, không phải chỗ chưa
+làm: job app bị giết giữa lúc chờ được cứu qua **cổng**, và đó chính là lý do
+`companionJobId` được ghi ngay lúc dispatch — cổng phát hiện job quá hạn, rồi
+`crew-reconcile --cancel-orphans` tìm ra và kết liễu nó. Chậm hơn handler, nhưng không
+mất. Cách khác là viết lại mọi lệnh companion thành async, cho một ca mà cổng đã phủ.
+
+Bài học đáng ghi hơn cả bản sửa: test đầu tiên tôi viết cho chốt này **đậu vì lý do
+sai** — fake trả kết quả ngay nên adapter đã settle trước khi signal tới, và assertion
+"ghi failed" vẫn xanh. Chỉ có assertion thứ hai (kiểm **tên signal** trong `failure`)
+lộ ra là đường đó chưa hề được đo.
+
+Lỗ thứ hai cùng loại: `cancel` job app trước đây chỉ với tới được **qua một snapshot**.
+Khi chính lệnh `status --wait` treo hoặc chết (broker kẹt, companion mất), adapter ghi
+job failed rồi bỏ đi — để lại một job nền vẫn chạy, vẫn ghi file, vẫn đốt quota, không
+ai theo. Giờ mất dấu là hủy: job adapter không còn theo được là job nó phải kết liễu.
 
 ### Report tổng: ba chốt, và cái mà `existsSync` không thấy
 

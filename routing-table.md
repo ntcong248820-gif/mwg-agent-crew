@@ -332,6 +332,26 @@ là kiểu thất bại im lặng mà harness này tồn tại để bắt. Ch�
 Hủy job ở runtime là **tự chọn**, mặc định tắt: phát hiện là một phép đọc, hủy là thay đổi
 thứ nằm ngoài repo. Muốn hủy thì `crew-reconcile.mjs <manifest> --cancel-orphans`.
 
+## Bảo vệ theo thư mục, không theo tên file
+
+`CLAUDE.md` bảo vệ tám **thư mục** skill (`.claude/skills/`, `.codex/skills/`,
+`.agents/skills/`, `.gemini/skills/`, cùng bốn bản trong `mwg-workflow-n8n/`). Đến
+25/08 code kiểm bằng `PROTECTED_PATHS.includes(path)` — **khớp tuyệt đối** — nên mọi
+thứ *bên trong* các thư mục đó không được bảo vệ: worker sửa
+`.claude/skills/seo-crew/SKILL.md` không khớp entry nào, rồi khớp prefix cho phép của
+task, và rơi vào `inScope`.
+
+Giờ có `PROTECTED_DIRS` khớp theo prefix. Hai hệ quả cần biết:
+
+- **Khai `filesMayModify` không mua được quyền ghi vào thư mục được bảo vệ.** Trước
+  đây khai `[".claude/skills/"]` là đủ; giờ vẫn bị tính là protected hit.
+- **Protected hit vẫn bác được bằng `--not-ours`.** Có chủ ý: repo này thường có vài
+  session chạy cùng lúc, nên session khác sửa file skill là chuyện thật và hay xảy ra.
+  Cấm bác hoàn toàn thì không run nào đi qua được khi có người bên cạnh chạy sync — mà
+  một cổng không thể thoả mãn một cách trung thực là cổng người ta học cách bỏ qua.
+  Lý do vẫn được ghi, và entry vẫn mang nhãn `protected` để người đọc thấy thứ vừa
+  được bác là loại nào.
+
 ## Model
 
 Chọn bậc theo **lượng phán đoán cần để đi từ input sang output**, không theo cảm
