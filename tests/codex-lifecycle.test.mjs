@@ -160,7 +160,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   // Every case below is a way the transport could fail without saying so.
   const FAKE = join(FIXTURES, "fake-companion.mjs");
 
-  const runApp = ({ mode, evidence, body = DONE_BODY, extra = [], companion = FAKE, marker = null, timeoutSec = 20, result = null }) => {
+  const runApp = ({ mode, evidence, body = DONE_BODY, extra = [], companion = FAKE, marker = null, timeoutSec = 20, result = null, race = null, raceState = null }) => {
     const proc = spawnSync("node", [
       ADAPTER,
       "--mode", "app",
@@ -181,6 +181,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
         FAKE_COMPANION_EVIDENCE: join(ws, evidence),
         FAKE_COMPANION_BODY: body,
         ...(result ? { FAKE_COMPANION_RESULT: result } : {}),
+        ...(race ? { FAKE_COMPANION_RACE: race, FAKE_COMPANION_RACE_STATE: raceState } : {}),
         ...(marker ? { FAKE_COMPANION_MARKER: marker } : {}),
       },
       timeout: (timeoutSec + 30) * 1000,
@@ -324,6 +325,97 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   try { resolveCompanion({}, join(ws, "empty-home")); } catch (err) { msg = `${err.message}|${err.detail}`; }
   t.check("nothing found says so", msg.startsWith("could not find codex-companion.mjs"), "true");
   t.check("...and lists the paths it tried", msg.includes("probed:"), "true");
+}
+
+// --- the dispatch race, replayed --------------------------------------------
+{
+  // Two app jobs fired in the same instant both died about fifteen seconds in,
+  // in two different ways, and staggering them by five seconds made both pass.
+  // So the store contradicts itself briefly and then settles. These cases hold
+  // the adapter to riding that out -- and to still failing when it is not a
+  // race at all.
+  const FAKE = join(FIXTURES, "fake-companion.mjs");
+  const raceRun = ({ race, evidence, stateFile }) => {
+    writeFile(stateFile, "0");
+    const proc = spawnSync("node", [
+      ADAPTER, "--mode", "app", "--prompt-file", brief, "--evidence", evidence,
+      "--workspace", ws, "--timeout", "20s", "--effort", "low",
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${FIXTURE_BIN}:${process.env.PATH}`,
+        FAKE_MODE: "ok",
+        MWG_CODEX_COMPANION: FAKE,
+        FAKE_COMPANION_MODE: "ok",
+        FAKE_COMPANION_EVIDENCE: join(ws, evidence),
+        FAKE_COMPANION_BODY: DONE_BODY,
+        FAKE_COMPANION_RACE: race,
+        FAKE_COMPANION_RACE_STATE: stateFile,
+      },
+      timeout: 120_000,
+    });
+    return {
+      exit: proc.status,
+      stderr: proc.stderr ?? "",
+      json: (() => { try { return JSON.parse(proc.stdout); } catch { return null; } })(),
+    };
+  };
+
+  // Shape one: the store denies the id its own dispatch just returned.
+  const denied = raceRun({
+    race: "no_job_found:1",
+    evidence: join(RUN_DIR_REL, "app-race-denied.md"),
+    stateFile: join(ws, "race-denied.count"),
+  });
+  t.check("a denied id right after dispatch is ridden out", denied.exit, 0);
+  t.check("...and the job is judged off its evidence", denied.json?.status, "done");
+  // Recorded, not swallowed: a tolerated race whose frequency nobody can see is
+  // a race nobody will fix.
+  t.check("...with the retry counted", denied.json?.settleRetries, 1);
+  t.check("...and why it retried", /chưa thấy job/.test(denied.json?.settleRaceWhy ?? ""), true);
+
+  // Shape two: a job object with no `status` at all, and waitTimedOut false.
+  const statusless = raceRun({
+    race: "no_status:1",
+    evidence: join(RUN_DIR_REL, "app-race-nostatus.md"),
+    stateFile: join(ws, "race-nostatus.count"),
+  });
+  t.check("a job with no status yet is ridden out", statusless.exit, 0);
+  t.check("...with the retry counted", statusless.json?.settleRetries, 1);
+  t.check("...and a different reason recorded", /chưa có status/.test(statusless.json?.settleRaceWhy ?? ""), true);
+
+  // A clean run must not claim a retry it never made, or the field stops being
+  // usable for measuring how often the race fires.
+  const clean = raceRun({
+    race: "no_job_found:0",
+    evidence: join(RUN_DIR_REL, "app-race-none.md"),
+    stateFile: join(ws, "race-none.count"),
+  });
+  t.check("a run with no race records no retry", `${clean.json?.settleRetries}`, "undefined");
+
+  // The guard that keeps the retry from doubling a long wait: if the call did
+  // wait out its whole allowance and still has no status, that is a broken
+  // answer, not a store catching up, and retrying would spend the allowance
+  // again.
+  const waitedAndBroken = raceRun({
+    race: "no_status_waited:1",
+    evidence: join(RUN_DIR_REL, "app-race-waited.md"),
+    stateFile: join(ws, "race-waited.count"),
+  });
+  t.check("a statusless answer that did wait is not retried", waitedAndBroken.exit, 1);
+  t.check("...and fails as a broken answer, not as a race", /returned no job\.status/.test(waitedAndBroken.stderr), true);
+
+  // The window has to run out. A store that never settles is a dead job, and
+  // this adapter exists because a dead job once went unnoticed for twenty
+  // minutes -- tolerating it forever would rebuild that bug.
+  const forever = raceRun({
+    race: "no_job_found:9999",
+    evidence: join(RUN_DIR_REL, "app-race-forever.md"),
+    stateFile: join(ws, "race-forever.count"),
+  });
+  t.check("a store that never settles still fails", forever.exit, 1);
+  t.check("...naming the window rather than the raw error", /never gave job .* a status within/.test(forever.stderr), true);
 }
 
 process.exit(t.finish() ? 0 : 1);

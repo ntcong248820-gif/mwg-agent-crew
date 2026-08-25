@@ -150,11 +150,19 @@ ghi evidence hợp lệ thì không được fail vì mất phần ghi chép.
 0 job fail**, cổng nghiệm thu exit 0. Tổng 132 giây so với 228 giây khi chạy tuần tự 2
 job — song song ăn được thật.
 
-Nhưng số app-server đi từ 1 lên **2**: một job Codex dùng app-server con của broker
-(ppid = pid broker), job kia có process companion **detached** (ppid 1) tự spawn
-app-server riêng. Đường phân nhánh ở `codex.mjs:623-637` có thật. `broker.log` rỗng nên
-chưa biết cơ chế là `BROKER_BUSY` fallback hay mỗi background job vốn tự mở runtime.
-App-server riêng tự dọn khi job xong. Chưa đo 3 job Codex cùng lúc.
+> **Sửa lại con số này ngày 25/08 (chiều), có căn cứ.** Đoạn dưới từng ghi "số app-server
+> đi từ 1 lên 2", suy ra từ việc job thứ hai có process companion **detached** (ppid 1).
+> Phép đo trực tiếp cho thấy suy luận đó sai: `task-worker` của companion **luôn** có
+> ppid 1 ngay từ lúc sinh ra (đo: pid 10778, ppid 1,
+> `codex-companion.mjs task-worker --job-id ...`). Đó là cách companion detach job nền,
+> **không** phải dấu hiệu có app-server thứ hai. Đo lại với quy chủ theo broker: 2 job app
+> chạy song song dùng **chung 1** app-server của broker, ở cả mốc dispatch và mốc settle.
+>
+> Chưa đo lại đúng hỗn hợp cũ (2 Codex + 1 Anti), nên không kết luận con số cho ca đó.
+> Chỉ kết luận: cách đếm cũ không phân biệt được app-server với task-worker detached.
+
+Đường phân nhánh ở `codex.mjs:623-637` có thật, nhưng `broker.log` rỗng nên chưa biết
+cơ chế là `BROKER_BUSY` fallback hay mỗi background job vốn tự mở runtime.
 
 ### Codex app transport — đo 2026-08-25
 
@@ -205,13 +213,117 @@ Ba chỗ đã đo và **không** suy diễn được:
   vắng mặt vô giá trị — 25/08 đã kết luận sai một lần vì chúng. Chỉ mắt người mới trả lời
   được câu này.
 - `sessionRuntime` **không** có ở `status <job-id>` (trả `null`). Nó chỉ có ở lệnh
-  `setup` (`codex-companion.mjs:208`), nên adapter không ghi được transport mode từ đó.
-  Tự tính thay: `broker.json` có `endpoint` → `shared` (`codex.mjs:906-922`).
+  `setup` (`codex-companion.mjs:208`) — và `setup --json` chỉ mất **0.45-0.52s**, nên gọi
+  nó là được, không cần tự suy. Suy từ `broker.json` là **đường dự phòng**, và phải kiểm
+  pid: file sống lâu hơn tiến trình, nên "có `endpoint`" một mình sẽ báo `shared` cho một
+  runtime đã chết.
 - **Broker được dựng bởi chính lệnh dispatch**, không phải có sẵn hay không. Đo 25/08:
   trước job nào thì `direct`; sau job đầu thì broker sống và mọi job sau là `shared`.
   Đừng đo trạng thái broker khi chưa chạy job rồi kết luận máy không có broker.
+  Bổ sung 25/08 (tối): reading còn **tự đổi** mà mình không làm gì — `direct` lúc 21:47,
+  `shared` lúc 22:05, không dispatch gì ở giữa (broker của session khác lên). Nên một
+  reading đơn lẻ không mô tả được cái máy lúc job thật sự chạy; xem mục dưới.
 - `--write` là **bắt buộc**, không theo `role`: mọi job crew đều phải tự ghi file
   evidence, nên app mode read-only thì không job nào qua được cổng evidence.
+
+### Runtime Codex ghi ở hai mốc — đo 2026-08-25
+
+Manifest có ba field khác nhau, đừng lẫn: `role` là **lý do** chọn, `transport` là **lựa
+chọn**, `codexRuntime` là **máy đã làm gì với lựa chọn đó**. Field thứ ba chỉ để đọc lại,
+không có gì route theo nó.
+
+Ghi **hai** mốc chứ không một, vì reading không ổn định: `direct` lúc 21:47 → `shared` lúc
+22:05, không dispatch gì ở giữa. `atDispatch` do job **đầu tiên** bắn ghi (ghi một lần rồi
+khoá), `atSettle` do job **cuối cùng** lắng ghi (ghi đè mỗi lần) — nhờ vậy các adapter chạy
+song song không cần phối hợp gì mà ngữ nghĩa vẫn đúng.
+
+Chỉ app mode ghi field này. Headless là `codex exec`, process riêng, không qua broker —
+"chung hay riêng runtime" không phải câu hỏi tồn tại với nó, và lấy reading trong lúc chạy
+headless sẽ gán broker của session khác cho job đó.
+
+**Đếm app-server phải có quy chủ.** Đo 25/08, cùng một lúc có 5 process khớp mẫu và chỉ 3
+là của ta:
+
+| pid | chủ |
+| --- | --- |
+| 18224 | ChatGPT.app — không liên quan crew |
+| 55831 | extension VS Code — không liên quan crew |
+| 65720 | broker của plugin (`app-server-broker.mjs`) — **không phải** app-server |
+| 65736 → 65737 | app-server của ta: node wrapper + native child = **một** server |
+
+Nên một con số đếm trần là con số đổi khi user mở VS Code. Ba phân biệt bắt buộc: broker
+không phải server; hai process là một server; server ngoài báo riêng, không cộng vào.
+
+### Dispatch app cùng lúc bị đua — đo 2026-08-25
+
+Bắn 2 job app **cùng lúc** (không nghỉ giữa hai lệnh): cả hai chết ngay ~15s, hai kiểu
+khác nhau, và hai job id chia chung tiền tố thời gian `task-mt8to8sy-`:
+
+| job | companion trả về |
+| --- | --- |
+| 1 | `status --wait` trả job **không có field `status`** (chỉ `phase: "starting"`) → adapter coi là vỡ giao thức |
+| 2 | `status --wait` báo **`No job found`** cho job vừa queue thành công |
+
+Bắn lại **lệch 5 giây**: 2/2 `done`, id khác nhau ở phần thời gian, cổng exit 0. Nên
+nguyên nhân khu trú được ở **dispatch đồng thời**, không phải ở `status` nói chung.
+
+Hai điều quan trọng hơn con số:
+
+- **Worker vẫn làm xong việc.** Cả hai job "chết" đều đã ghi evidence đầy đủ với
+  `Status: DONE`. `crew-reconcile.mjs` sửa cả hai về `done` và ghi lại chỗ bất đồng. Đây là
+  bằng chứng sống cho doctrine: evidence trên đĩa thắng phán quyết runtime.
+- **Job 1 sau đó companion không còn nhớ id** (`No job found` khi tra `result`). Đó đúng
+  lớp `unknown_to_runtime` mà reconcile mới biết phân loại — nhưng vì có evidence nên đường
+  evidence xử lý trước, không bị gọi là orphan.
+
+**Đã khoan nhượng ở adapter (25/08).** `codex-run.mjs` chịu đúng hai hình dạng trên trong
+`SETTLE_RACE_WINDOW_MS` = 45s kể từ lần hỏi đầu, hỏi lại mỗi 3s, rồi mới bỏ. Trần tính theo
+**đồng hồ** chứ không theo số lần — vì `status --wait` chặn tới khi job settle, nên đếm lần
+sẽ biến một lần chờ 8 phút thành ba. Một lệnh đã thật sự chờ thì đã quá cửa sổ, không bị hỏi
+lại.
+
+Chỉ hai hình dạng đó được khoan nhượng. Mọi lỗi khác vẫn chết ngay lần đầu: retry rộng tay
+sẽ biến một job chết thật thành một job chết chậm, mà adapter này tồn tại chính vì một job
+chết từng không ai hay trong 20 phút.
+
+Số lần hỏi lại được **ghi vào manifest** (`settleRetries`, `settleRaceWhy`), không nuốt: một
+cuộc đua được khoan nhượng mà không ai đo được tần suất là cuộc đua không ai sửa. Gốc vẫn ở
+job store của companion, không ở đây.
+
+Vận hành: vẫn nên **giãn các lệnh dispatch app ra** ~5s. Khoan nhượng làm job không chết
+oan, nhưng mỗi lần hỏi lại vẫn tốn một vòng gọi process.
+
+### Orphan: reconcile được quyền quyết cái gì — đo 2026-08-25
+
+`crew-reconcile.mjs` trước đây từ chối phán bất cứ job nào không có evidence, lý do viết
+thẳng trong file: "chỉ dispatcher biết runtime còn sống không". Điều đó đúng khi đầu vào
+chỉ có manifest và đĩa. Vì `companionJobId` giờ được ghi **ngay lúc dispatch** (trước đây
+chỉ ghi trên đường trả về — nên đúng ca cần nó thì không có), runtime hỏi được trực tiếp.
+
+Bảng phán quyết, cho job còn ở trạng thái sổ sách và không có evidence:
+
+| `result <id>` trả về | kết luận |
+| --- | --- |
+| exit ≠ 0, `No job found` | orphan `unknown_to_runtime` |
+| `queued`/`running` + pid **còn sống** | vẫn chờ, **không** động vào |
+| `queued`/`running` + pid chết hoặc không có | orphan `active_without_process` |
+| `completed`/`failed`/`cancelled` | orphan `settled_without_evidence` |
+| probe lỗi, không trả lời được | vẫn chờ — im lặng không phải là chết |
+
+Ba phép đo làm bảng này an toàn:
+
+- Job **đang chạy** có pid thật; job **đã xong** có `pid: null`. Nếu job chạy cũng null thì
+  quy tắc "pid chết = orphan" sẽ giết mọi job sống.
+- `result <id>` **vẫn tra được** job của 7 giờ trước, trong khi `status --all` liệt kê 0
+  job. Nên "không có trong danh sách" không chứng minh gì; `result` là oracle duy nhất.
+- id không tồn tại thì exit 1 và in **text thường**, không phải JSON → phát hiện bằng exit
+  code, không phải bằng cách đọc chuỗi lỗi.
+
+`completed` mà không có evidence **không** được tính là đậu: chạy xong mà không ghi gì đúng
+là kiểu thất bại im lặng mà harness này tồn tại để bắt. Chỉ evidence cho đậu.
+
+Hủy job ở runtime là **tự chọn**, mặc định tắt: phát hiện là một phép đọc, hủy là thay đổi
+thứ nằm ngoài repo. Muốn hủy thì `crew-reconcile.mjs <manifest> --cancel-orphans`.
 
 ## Model
 

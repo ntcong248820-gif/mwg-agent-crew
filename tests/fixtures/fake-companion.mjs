@@ -22,8 +22,20 @@
  *   FAKE_COMPANION_EVIDENCE absolute path the fake "worker" writes
  *   FAKE_COMPANION_BODY     what it writes there ("" writes nothing)
  *   FAKE_COMPANION_MARKER   file that records which subcommands were called
+ *   FAKE_COMPANION_RACE     none (default) | no_job_found:<n> | no_status:<n>
+ *                           | no_status_waited:<n>  -- same missing status, but
+ *                             waitTimedOut true: the call did wait, so this is
+ *                             a broken answer rather than a store catching up
+ *                           -- the two shapes measured when two app jobs were
+ *                              dispatched in the same instant: the store either
+ *                              denies the id it just handed out, or answers with
+ *                              a job carrying no `status` at all. Stateful: it
+ *                              misbehaves for the first <n> `status` calls and
+ *                              then answers normally, because that is what the
+ *                              real thing does -- the condition settles.
+ *   FAKE_COMPANION_RACE_STATE  file used to count those calls across processes
  */
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const mode = process.env.FAKE_COMPANION_MODE ?? "ok";
@@ -63,6 +75,34 @@ if (cmd === "task") {
 }
 
 if (cmd === "status") {
+  // The dispatch race, replayed. Counting happens on disk because each fake
+  // invocation is its own process, exactly as the real companion is.
+  const [raceKind, raceTimes] = (process.env.FAKE_COMPANION_RACE ?? "none").split(":");
+  if (raceKind === "no_job_found" || raceKind === "no_status" || raceKind === "no_status_waited") {
+    const statePath = process.env.FAKE_COMPANION_RACE_STATE;
+    let seen = 0;
+    if (statePath) {
+      try { seen = Number(readFileSync(statePath, "utf8").trim()) || 0; } catch { seen = 0; }
+      writeFileSync(statePath, String(seen + 1), "utf8");
+    }
+    // Parsed, not coerced: `Number(x) || 1` turns an explicit ":0" into one
+    // misbehaviour, which is the opposite of what ":0" asks for.
+    const times = raceTimes === undefined ? 1 : Number(raceTimes);
+    if (seen < (Number.isFinite(times) ? times : 1)) {
+      if (raceKind === "no_job_found") {
+        process.stderr.write(`No job found for "${rest[0]}". Run /codex:status to list known jobs.\n`);
+        process.exit(1);
+      }
+      // Measured shape: a job object with no `status` and no `threadId`, and
+      // waitTimedOut false -- the call returned without having waited.
+      say({
+        workspaceRoot: process.cwd(),
+        job: { id: JOB_ID, phase: "starting", kindLabel: "job", progressPreview: [], elapsed: "0s", duration: null },
+        waitTimedOut: raceKind === "no_status_waited",
+        timeoutMs: Number(rest[rest.indexOf("--timeout-ms") + 1]) || 0,
+      });
+    }
+  }
   const active = mode === "timeout";
   say({
     workspaceRoot: process.cwd(),

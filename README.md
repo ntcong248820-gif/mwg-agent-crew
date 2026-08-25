@@ -46,12 +46,13 @@ chỉ trỏ vào.
 | --- | --- |
 | `scripts/anti-env.mjs` | Discover runtime của app Antigravity 2.0 (pid, gRPC address, projectId). Không hardcode giá trị nào; app restart thì tự discover lại. |
 | `scripts/anti-run.mjs` | Chạy 1 job Antigravity. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). |
-| `scripts/codex-run.mjs` | Chạy 1 job Codex. `--mode headless` (mặc định) qua `codex exec --json`, watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. `--mode app` mở thread thật trong app Codex qua companion của plugin — hiện trong danh sách thread với tên `Codex Companion Task: {dòng đầu brief}`, và resume được bằng `codex resume <id>`. Sau khi settle nó gọi `result <job-id>` để lấy câu trả lời của worker về, ghi cạnh log và trỏ qua `lastMessage` như headless; kèm `companionExitStatus` và `touchedFiles` mà companion tự khai. Log ghi vào `tasks/{task}/data/crew-logs/{run}/` — thuộc `data/` vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest. |
+| `scripts/codex-run.mjs` | Chạy 1 job Codex. `--mode headless` (mặc định) qua `codex exec --json`, watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. `--mode app` mở thread thật trong app Codex qua companion của plugin — hiện trong danh sách thread với tên `Codex Companion Task: {dòng đầu brief}`, và resume được bằng `codex resume <id>`. Sau khi settle nó gọi `result <job-id>` để lấy câu trả lời của worker về, ghi cạnh log và trỏ qua `lastMessage` như headless; kèm `companionExitStatus` và `touchedFiles` mà companion tự khai. Chịu được cuộc đua job store ngay sau dispatch (id vừa cấp bị phủ nhận, hoặc job trả về chưa có `status`) trong cửa sổ 45s tính theo đồng hồ, và ghi số lần hỏi lại vào `settleRetries` thay vì nuốt. Log ghi vào `tasks/{task}/data/crew-logs/{run}/` — thuộc `data/` vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest. |
 | `scripts/codex-companion-path.mjs` | Tìm `codex-companion.mjs` của plugin Codex (ngoài repo). Env override `MWG_CODEX_COMPANION` là **quyết định cuối** — trỏ sai thì báo lỗi, không dò tiếp sang bản khác. |
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
 | `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock có owner token nên nhiều job kết thúc cùng lúc không mất update. |
-| `scripts/crew-reconcile.mjs` | Vá manifest từ evidence trên đĩa khi runtime chết hoặc bỏ cuộc trước lúc ghi sổ. Idempotent. Không ghi đè phán quyết đã đậu. |
+| `scripts/crew-reconcile.mjs` | Vá manifest từ evidence trên đĩa khi runtime chết hoặc bỏ cuộc trước lúc ghi sổ. Idempotent. Không ghi đè phán quyết đã đậu. Job không có evidence thì hỏi runtime bằng `companionJobId` để phân biệt job còn sống với job mồ côi; hủy ở runtime là tự chọn (`--cancel-orphans`), mặc định chỉ báo. |
+| `scripts/crew-runtime-probe.mjs` | Đọc runtime Codex mà run đang ngồi lên: `shared`/`direct`/`unknown`, và đếm app-server **có quy chủ** (của broker mình vs của ChatGPT.app / VS Code). Không bao giờ throw — một số liệu chẩn đoán không được phép làm chết dispatch. |
 | `scripts/crew-collect.mjs` | Cổng nghiệm thu cuối run: reconcile → phán từng job → kiểm trùng `evidence_path` → kiểm phạm vi ghi → in bảng verdict. Exit 0 mới được viết report tổng. |
 | `scripts/crew-scope.mjs` | Quy file thay đổi trong working tree về từng job: ưu tiên `touchedFiles` runtime tự khai, còn lại theo mtime nằm trong khoảng job đó chạy. Tách khỏi collect vì đây là logic quy trách nhiệm, không phải logic phán quyết. |
 
@@ -82,12 +83,16 @@ node mwg-agent-crew/scripts/anti-run.mjs --mode headless \
 ```
 
 ```bash
-node mwg-agent-crew/scripts/crew-reconcile.mjs <run>/manifest.json [--dry-run]
+node mwg-agent-crew/scripts/crew-reconcile.mjs <run>/manifest.json [--dry-run] [--cancel-orphans]
 ```
 
 ```bash
 node mwg-agent-crew/scripts/crew-collect.mjs <run>/manifest.json \
   [--abandon <seq>] [--grace <ms>] [--dry-run]
+```
+
+```bash
+node mwg-agent-crew/scripts/crew-runtime-probe.mjs --workspace "$PWD" [--json] [--no-companion]
 ```
 
 ### Hai app mode không giống nhau, đừng suy từ cái này sang cái kia
@@ -229,6 +234,43 @@ headless mà không truy được vì sao job nào đi đường nào. Chính v�
 transport vào đó là ghi một box chat chưa từng mở. Và `mode` — field cũ, chưa từng có
 ai đọc bằng code — bị từ chối luôn thay vì để nó âm thầm biến mất: hai field ghi cùng
 một sự thật là hai field sẽ lệch nhau.
+
+### `codexRuntime`: quan sát, không phải quyết định
+
+Manifest có ba field dễ lẫn. `role` là **lý do** chọn transport, `transport` là **lựa
+chọn**, `codexRuntime` là **cái máy đã làm với lựa chọn đó**. Không có gì route theo field
+thứ ba; nó tồn tại để lần sau đọc lại chứ không để bây giờ hành động.
+
+Ghi hai mốc `atDispatch` / `atSettle` thay vì một, vì reading tự đổi: `direct` lúc 21:47,
+`shared` lúc 22:05, không dispatch gì ở giữa. Quy tắc ghi cố tình không cần phối hợp —
+`atDispatch` khoá sau lần ghi đầu (job đầu bắn thắng), `atSettle` ghi đè mọi lần (job cuối
+lắng thắng) — nên 3 adapter chạy song song vẫn cho ra hai field đúng nghĩa.
+
+Chỉ app mode ghi. Headless là `codex exec`, process riêng, không đi qua broker, nên câu hỏi
+"chung hay riêng" không tồn tại với nó; lấy reading lúc chạy headless chỉ gán broker của
+session khác cho job đó.
+
+Đếm app-server **phải quy chủ**: 25/08 có 5 process khớp mẫu cùng lúc và chỉ 3 là của ta
+(ChatGPT.app và extension VS Code mỗi thứ giữ một cái thường trực). Broker không phải
+app-server, và một app-server là hai process (node wrapper + native child). Con số đếm trần
+là con số đổi khi user mở VS Code.
+
+### Orphan: cấp thêm dữ kiện, không nới quy tắc
+
+`crew-reconcile.mjs` vốn từ chối phán mọi job không có evidence, và lý do nằm ngay trong
+file: "chỉ dispatcher biết runtime còn sống không". Nhánh orphan **không** bỏ lời từ chối
+đó — nó cấp cho reconcile đúng dữ kiện nó thiếu. `companionJobId` giờ được ghi ngay lúc
+dispatch thay vì trên đường trả về, nên runtime hỏi được trực tiếp bằng `result <id>`.
+
+Hai chỗ cố ý giữ chặt:
+
+- **Im lặng không phải là chết.** Probe lỗi, hoặc runtime nói job còn chạy và pid còn sống,
+  thì job vẫn ở `waiting`. Một companion không hỏi được sẽ không làm fail cả run.
+- **`completed` không mua được đậu.** Runtime báo xong mà đĩa không có evidence thì đó là
+  thất bại im lặng, đúng thứ harness này tồn tại để bắt. Chỉ evidence cho đậu.
+
+Hủy job ở runtime là tự chọn (`--cancel-orphans`), mặc định tắt: phát hiện là phép đọc, hủy
+là thay đổi thứ ngoài repo — và posture của module là reconcile báo, dispatcher quyết.
 
 ### `MANIFEST_VERSION` là mốc để đọc sự vắng mặt
 

@@ -80,6 +80,24 @@ const COMPANION_ACTIVE = new Set(["queued", "running"]);
 const COMPANION_WAIT_SLACK_MS = 60_000;
 /** Dispatch is a queue insert, not the job: it should answer in seconds. */
 const COMPANION_DISPATCH_TIMEOUT_MS = 120_000;
+
+/**
+ * How long after dispatch the companion's job store is allowed to contradict
+ * itself, and how often to re-ask inside that window.
+ *
+ * Measured 25/08/2026: two app jobs dispatched in the same instant both died
+ * about fifteen seconds in, in two different ways -- one `status --wait` denied
+ * the very id the dispatch had just returned, the other answered with a job
+ * carrying no `status` at all. Staggering the two commands by five seconds made
+ * both pass, so the condition is a race in the store and it settles on its own.
+ *
+ * The window is wall-clock rather than a plain attempt count, and that is the
+ * load-bearing part: `status --wait` blocks until the job settles, so retrying
+ * on attempts alone could turn one eight-minute wait into three. A call that
+ * actually waited is already past this window and will not be retried.
+ */
+const SETTLE_RACE_WINDOW_MS = 45_000;
+const SETTLE_RETRY_DELAY_MS = 3_000;
 /**
  * `result` reads a finished job out of the companion's own store, so it is a
  * lookup, not work. Kept short and deliberately non-fatal: the reply text is a
@@ -557,6 +575,124 @@ function fetchCompanionReply(companion, jobId, { workspace, replyPath }) {
   return out;
 }
 
+/**
+ * Put the companion's job id in the manifest the moment it exists.
+ *
+ * It used to be recorded only on the return path, together with the rest of the
+ * result -- which meant the one case that needs it never had it. A job whose
+ * adapter dies mid-flight is exactly the job whose id nobody can look up, and
+ * without the id there is no way to ask the companion whether the work is still
+ * running or long gone. The id has to outlive the process that learned it.
+ *
+ * The later write on the return path is left in place: it carries the settled
+ * status alongside, and rewriting the same id with the same value is harmless.
+ */
+async function registerCompanionJob(options, jobId) {
+  if (!options.manifest || !options.job) return;
+  try {
+    const { updateJob } = await import("./crew-manifest.mjs");
+    updateJob(options.manifest, Number(options.job), { companionJobId: jobId });
+  } catch (err) {
+    process.stderr.write(`codex-run: could not record the companion job id: ${err.message}\n`);
+  }
+}
+
+/**
+ * Take one runtime reading and store it on the run. Swallows everything.
+ *
+ * App mode only, and that is not an omission. Headless is `codex exec`, its own
+ * process with no broker and no app-server, so "shared or private runtime" is
+ * not a question that exists for it -- and a reading taken while a headless job
+ * ran would attribute whatever broker happened to be up, belonging to some
+ * other session, to this job.
+ *
+ * Failure here is silent by design. This is a diagnostic about the run, and a
+ * diagnostic that can fail a job which otherwise succeeded is worse than no
+ * diagnostic at all.
+ */
+async function noteRuntime(options, when, workspace) {
+  if (!options.manifest || !options.job) return;
+  try {
+    const { probeRuntime } = await import("./crew-runtime-probe.mjs");
+    const { recordRuntime } = await import("./crew-manifest.mjs");
+    recordRuntime(options.manifest, when, probeRuntime({ workspace }));
+  } catch (err) {
+    process.stderr.write(`codex-run: could not record the runtime reading (${when}): ${err.message}\n`);
+  }
+}
+
+/** Whether a companion failure is the store denying an id it just issued. */
+function isJobNotFound(err) {
+  return /no job found/i.test(`${err?.message ?? ""} ${err?.detail ?? ""}`);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wait for a job to settle, tolerating a store that has not caught up yet.
+ *
+ * Only the two measured shapes are tolerated, and only inside
+ * `SETTLE_RACE_WINDOW_MS` of the first ask. Everything else still throws on the
+ * first failure: a broad retry here would turn a real dead job into a slow dead
+ * job, and this adapter exists because a job died once and nobody noticed.
+ *
+ * The retry count comes back with the snapshot and goes into the manifest. That
+ * is deliberate -- tolerating a bug without recording how often it fires would
+ * hide the thing worth fixing, and the fix for the race itself is not here: it
+ * is in the companion's store.
+ */
+async function waitForSettle(companion, jobId, { workspace, timeoutMs }) {
+  const args = [
+    "status", jobId, "--wait",
+    "--timeout-ms", String(timeoutMs),
+    "--poll-interval-ms", "2000",
+    "--json", "--cwd", workspace,
+  ];
+  const deadline = Date.now() + SETTLE_RACE_WINDOW_MS;
+  let retries = 0;
+  let why = null;
+
+  for (;;) {
+    let snapshot = null;
+    let failure = null;
+    try {
+      snapshot = callCompanion(companion, args, {
+        workspace, timeoutMs: timeoutMs + COMPANION_WAIT_SLACK_MS, what: `status --wait for ${jobId}`,
+      });
+    } catch (err) {
+      // Anything but the store denying its own id is a real failure.
+      if (!isJobNotFound(err)) throw err;
+      failure = err;
+      why = "runtime chưa thấy job vừa nhận";
+    }
+
+    if (snapshot) {
+      if (typeof snapshot?.job?.status === "string") return { snapshot, settleRetries: retries, settleRaceWhy: retries ? why : null };
+      // A job with no status is only transient when the call did not wait. If
+      // it waited out its whole allowance and still has no status, that is a
+      // broken answer, not a store catching up.
+      if (snapshot.waitTimedOut === true) {
+        throw new CodexRunError(
+          "companion status returned no job.status",
+          `got: ${JSON.stringify(snapshot).slice(0, 400)}`,
+        );
+      }
+      why = "runtime trả job chưa có status";
+    }
+
+    if (Date.now() >= deadline) {
+      const detail = failure ? (failure.detail ?? failure.message) : `got: ${JSON.stringify(snapshot).slice(0, 400)}`;
+      throw new CodexRunError(
+        `companion never gave job ${jobId} a status within ${Math.round(SETTLE_RACE_WINDOW_MS / 1000)}s of dispatch (${why})`,
+        detail,
+      );
+    }
+    retries += 1;
+    process.stderr.write(`codex-run: ${why}, thử lại sau ${SETTLE_RETRY_DELAY_MS / 1000}s (lần ${retries})\n`);
+    await sleep(SETTLE_RETRY_DELAY_MS);
+  }
+}
+
 export async function codexRunApp(options) {
   const {
     workspace, evidenceAbs, promptText, timeout, timeoutMs, effort, logDir, base,
@@ -607,24 +743,24 @@ export async function codexRunApp(options) {
     );
   }
   process.stderr.write(`codex-run: app job ${jobId} queued, waiting up to ${timeout}\n`);
+  // Both of these have to survive this process dying, which is why they are
+  // written here rather than with the rest of the result at the end.
+  await registerCompanionJob(options, jobId);
+  // After the queue succeeds, not before: if this dispatch is what brought a
+  // broker up, a reading taken earlier would miss the runtime it just created.
+  await noteRuntime(options, "atDispatch", workspace);
 
-  const snapshot = callCompanion(companion, [
-    "status", jobId, "--wait",
-    "--timeout-ms", String(timeoutMs),
-    "--poll-interval-ms", "2000",
-    "--json", "--cwd", workspace,
-  ], { workspace, timeoutMs: timeoutMs + COMPANION_WAIT_SLACK_MS, what: `status --wait for ${jobId}` });
+  const { snapshot, settleRetries, settleRaceWhy } = await waitForSettle(companion, jobId, { workspace, timeoutMs });
 
   try {
     writeFileSync(statusPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
   } catch { /* an audit copy must not fail a finished job */ }
 
+  // waitForSettle already guarantees a job with a string status, so this is the
+  // narrower leftover: a payload with no job object at all.
   const job = snapshot?.job;
-  if (!job || typeof job.status !== "string") {
-    throw new CodexRunError(
-      "companion status returned no job.status",
-      `got: ${JSON.stringify(snapshot).slice(0, 400)}`,
-    );
+  if (!job) {
+    throw new CodexRunError("companion status returned no job", `got: ${JSON.stringify(snapshot).slice(0, 400)}`);
   }
 
   const timedOut = Boolean(snapshot.waitTimedOut) || COMPANION_ACTIVE.has(job.status);
@@ -642,6 +778,10 @@ export async function codexRunApp(options) {
     }
     process.stderr.write(`codex-run: ${cancelled}\n`);
   }
+
+  // After the cancel branch, so a runtime this adapter just tore down reads as
+  // torn down rather than as it was while the job still held it.
+  await noteRuntime(options, "atSettle", workspace);
 
   // Asked for even on a job the companion calls failed, and even after a
   // cancel: whatever the worker managed to say before it stopped is the most
@@ -681,6 +821,11 @@ export async function codexRunApp(options) {
     conversationId: job.threadId ?? null,
     companionJobId: jobId,
     companionStatus: job.status,
+    // How many times the store had to be re-asked before it would name a
+    // status, and why. Recorded rather than swallowed: a tolerated race whose
+    // frequency nobody can see is a race nobody will fix.
+    settleRetries: settleRetries || undefined,
+    settleRaceWhy: settleRaceWhy ?? undefined,
     turnId: job.turnId ?? null,
     companionLog: job.logFile ?? null,
     statusFile: statusPath,
@@ -792,6 +937,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       } catch (manifestErr) {
         console.error(`codex-run: could not record the failure in the manifest: ${manifestErr.message}`);
       }
+      // The settle reading has to be taken here too. It was originally only on
+      // the success path, and the first live run showed why that is wrong: both
+      // adapters threw before reaching it, so a run whose failure is the very
+      // thing worth diagnosing recorded no reading at all. `atSettle` means
+      // "what the runtime looked like when this run ended", and a run that ends
+      // badly still ends.
+      if (mode === "app") await noteRuntime(opts, "atSettle", resolve(opts.workspace ?? process.cwd()));
     }
     console.error(`codex-run: ${err.message}`);
     process.exit(1);
@@ -848,6 +1000,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // and why the reply is missing when it is. Both are record, not verdict.
         companionExitStatus: result.companionExitStatus,
         replyError: result.replyError,
+        // App transport only, and only when the dispatch race actually fired.
+        settleRetries: result.settleRetries,
+        settleRaceWhy: result.settleRaceWhy,
         notes: result.runtimeVerdict
           ? [...prior, `runtime báo fail (${result.runtimeVerdict}) nhưng evidence tự phán ${result.reportedStatus} — cần người đọc`]
           : prior,

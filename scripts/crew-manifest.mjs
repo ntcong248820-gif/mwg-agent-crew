@@ -343,6 +343,49 @@ export function addJob(manifestPath, job) {
  * read outside the lock loses any note another process appended in between --
  * and the collect gate is explicitly expected to run while jobs are still live.
  */
+/**
+ * Store one runtime reading on the run.
+ *
+ * `transport` says what the dispatcher chose and `role` says why. Neither says
+ * what the machine did with the choice, and that is the part that decides
+ * whether two concurrent runs share one Codex runtime or start their own. This
+ * is the third field, and it is deliberately an observation rather than a
+ * decision: nothing reads it to route work.
+ *
+ * Two moments, because one reading is not enough (đo 25/08/2026):
+ * `sessionRuntime.mode` read `direct` at 21:47 and `shared` at 22:05 with
+ * nothing dispatched in between -- a broker had come up on its own. A single
+ * pre-run reading describes a machine that no longer exists by the time the
+ * jobs land.
+ *
+ * The write rule needs no coordination between adapters, which is why it is
+ * shaped this way: `atDispatch` is written only when absent, so the first job
+ * to fire records it; `atSettle` is overwritten every time, so the last job to
+ * finish records it. Several adapters can call this concurrently -- they do,
+ * up to MAX_PARALLEL of them -- and the two fields still mean "when the run
+ * started dispatching" and "when it finished settling".
+ *
+ * The reading is passed in rather than taken here on purpose. This module is
+ * the lowest layer and stays free of process spawning, so a manifest test does
+ * not have to run `ps` or the companion to exercise a write.
+ */
+export function recordRuntime(manifestPath, when, reading) {
+  if (when !== "atDispatch" && when !== "atSettle") {
+    throw new ManifestError(`runtime reading must be atDispatch or atSettle, got ${when}`);
+  }
+  let stored;
+  updateManifest(manifestPath, (m) => {
+    m.codexRuntime = m.codexRuntime ?? { atDispatch: null, atSettle: null };
+    // First writer wins for dispatch, last writer wins for settle.
+    if (when === "atSettle" || m.codexRuntime.atDispatch === null) {
+      m.codexRuntime[when] = reading;
+    }
+    stored = m.codexRuntime;
+    return m;
+  });
+  return stored;
+}
+
 export function appendNote(manifestPath, seq, ...notes) {
   let updated;
   updateManifest(manifestPath, (m) => {

@@ -19,8 +19,11 @@
  */
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { readManifest, updateJob, appendNote } from "./crew-manifest.mjs";
 import { readWorkerStatus } from "./crew-guards.mjs";
+import { probeCompanionJob, COMPANION_ACTIVE } from "./crew-runtime-probe.mjs";
+import { resolveCompanion } from "./codex-companion-path.mjs";
 
 /**
  * The rule, learned from a real run: evidence with a valid Status line outranks
@@ -56,18 +59,118 @@ export function resolveEvidence(job, workspace) {
   return existsSync(declared) ? declared : null;
 }
 
-export function reconcileRun(manifestPath, { dryRun = false } = {}) {
+/**
+ * Decide what a job with no evidence actually is, given the runtime's answer.
+ *
+ * The old rule was to leave every such job alone, and the reason was written
+ * into this file: "only the dispatcher knows whether the runtime is still up".
+ * That was true while the only inputs were the manifest and the filesystem.
+ * Since the companion's job id is now recorded at dispatch instead of on the
+ * return path, the runtime can be asked, so the missing knowledge is supplied
+ * rather than the caution being dropped.
+ *
+ * Returns `null` for "still waiting, do not touch" -- which stays the answer
+ * whenever the runtime says the work is live, or says nothing usable at all.
+ * Silence is not death: a probe that errors leaves the job waiting.
+ *
+ * Pure on purpose. The classification is the part worth testing, and it should
+ * not require a companion to exist in order to be exercised.
+ */
+export function classifyOrphan(job, probe) {
+  if (!probe) return null;
+  if (probe.error) return null;                       // no answer is not an answer
+  if (probe.known === false) {
+    return { kind: "unknown_to_runtime", why: "runtime không còn bản ghi nào cho job này" };
+  }
+  if (probe.known !== true) return null;
+
+  if (COMPANION_ACTIVE.has(probe.status)) {
+    // A live pid means the work is genuinely still going: leave it. This is the
+    // measurement the rule rests on -- a running job carries a real pid, a
+    // finished one carries none -- so a missing pid on an "active" job means the
+    // runtime is tracking something that no longer exists.
+    if (probe.alive === true) return null;
+    if (probe.alive === null && probe.pid === null) {
+      return { kind: "active_without_process", why: `runtime báo ${probe.status} nhưng không có tiến trình nào` };
+    }
+    if (probe.alive === false) {
+      return { kind: "active_without_process", why: `runtime báo ${probe.status} nhưng pid ${probe.pid} đã chết` };
+    }
+    return null;
+  }
+
+  // Settled, and nothing on disk. Note this is not read as a pass even when the
+  // runtime says `completed`: a run that finished without writing its evidence
+  // is the silent-success failure this harness exists to catch, and the only
+  // thing that can grant a pass is the evidence file.
+  return { kind: "settled_without_evidence", why: `runtime báo ${probe.status} nhưng không có evidence` };
+}
+
+/**
+ * Tell the runtime to drop a job it still thinks is running.
+ *
+ * Opt-in, never automatic. Detecting an orphan is a reading; cancelling is a
+ * change to something outside this repo, and the module's whole posture is that
+ * reconcile reports and the dispatcher decides. The flag is the dispatcher
+ * deciding.
+ */
+function cancelCompanionJob(jobId, workspace) {
+  try {
+    const companion = resolveCompanion();
+    const proc = spawnSync(process.execPath, [companion, "cancel", jobId, "--json", "--cwd", workspace], {
+      cwd: workspace, encoding: "utf8", timeout: 60_000,
+      env: { ...process.env, MWG_CREW_ROLE: "worker" },
+    });
+    if (proc.error) return `cancel thất bại: ${proc.error.message}`;
+    if (proc.status !== 0) return `cancel exit ${proc.status}`;
+    return null;
+  } catch (err) {
+    return `cancel thất bại: ${err.message}`;
+  }
+}
+
+export function reconcileRun(manifestPath, { dryRun = false, cancelOrphans = false, probe = probeCompanionJob } = {}) {
   const abs = resolve(manifestPath);
   const manifest = readManifest(abs);
-  const result = { runId: manifest.runId, patched: [], waiting: [], untouched: [] };
+  const result = { runId: manifest.runId, patched: [], waiting: [], untouched: [], orphans: [] };
 
   for (const job of manifest.jobs) {
     const candidate = resolveEvidence(job, manifest.workspace);
 
     if (!candidate) {
-      // No evidence yet: the job may still be running, and only the dispatcher
-      // knows whether its runtime is still alive. Report, do not judge.
-      result.waiting.push({ seq: job.seq, status: job.status, evidence: job.evidence });
+      // No evidence yet. A job whose manifest status already records an outcome
+      // is not probed: the question here is only about jobs still described as
+      // bookkeeping, and re-litigating a recorded verdict is what this file
+      // exists not to do.
+      const orphan = BOOKKEEPING.has(job.status) && job.companionJobId
+        ? classifyOrphan(job, probe(job.companionJobId, { workspace: manifest.workspace }))
+        : null;
+
+      if (!orphan) {
+        // Still the old answer, and still for the old reason: the runtime says
+        // the work is live, or it said nothing this code can act on.
+        result.waiting.push({ seq: job.seq, status: job.status, evidence: job.evidence });
+        continue;
+      }
+
+      let cancelled = null;
+      if (cancelOrphans && orphan.kind === "active_without_process" && !dryRun) {
+        cancelled = cancelCompanionJob(job.companionJobId, manifest.workspace) ?? "đã hủy ở runtime";
+      }
+      result.orphans.push({ seq: job.seq, from: job.status, kind: orphan.kind, why: orphan.why, cancelled });
+
+      if (!dryRun) {
+        updateJob(abs, job.seq, {
+          status: "failed",
+          // Same care as the evidence path: an invented end time at "now" would
+          // hand this job a write window reaching the present, and the scope
+          // gate would charge it with everything edited meanwhile.
+          endedAt: job.endedAt ?? new Date().toISOString(),
+          endedAtInferred: job.endedAt ? undefined : true,
+          orphanKind: orphan.kind,
+        });
+        appendNote(abs, job.seq, `reconcile: ${job.status} → failed — ${orphan.why}${cancelled ? ` (${cancelled})` : ""}`);
+      }
       continue;
     }
 
@@ -129,17 +232,23 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const manifestPath = args.find((a) => !a.startsWith("--"));
   const dryRun = args.includes("--dry-run");
+  const cancelOrphans = args.includes("--cancel-orphans");
   if (!manifestPath) {
-    console.error("usage: crew-reconcile.mjs <manifest.json> [--dry-run]");
+    console.error("usage: crew-reconcile.mjs <manifest.json> [--dry-run] [--cancel-orphans]");
     process.exit(2);
   }
   try {
-    const r = reconcileRun(manifestPath, { dryRun });
+    const r = reconcileRun(manifestPath, { dryRun, cancelOrphans });
     const verb = dryRun ? "sẽ sửa" : "đã sửa";
     for (const p of r.patched) console.log(`${verb} job ${p.seq}: ${p.from} → ${p.to} (${p.reported ?? "không có dòng Status"})`);
+    for (const o of r.orphans) {
+      console.log(`${verb} job ${o.seq}: ${o.from} → failed — ${o.why}`);
+      if (o.cancelled) console.log(`   ${o.cancelled}`);
+      else if (o.kind === "active_without_process") console.log(`   runtime vẫn giữ job này; chạy lại với --cancel-orphans để bỏ`);
+    }
     for (const w of r.waiting) console.log(`chờ job ${w.seq}: chưa có evidence tại ${w.evidence}`);
     for (const u of r.untouched) console.log(`giữ nguyên job ${u.seq} (${u.status}): ${u.why}`);
-    if (r.patched.length === 0 && r.waiting.length === 0) console.log("manifest đã khớp với evidence, không cần sửa");
+    if (r.patched.length === 0 && r.waiting.length === 0 && r.orphans.length === 0) console.log("manifest đã khớp với evidence, không cần sửa");
   } catch (err) {
     console.error(`crew-reconcile: ${err.message}`);
     process.exit(1);
