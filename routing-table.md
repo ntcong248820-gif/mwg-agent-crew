@@ -30,7 +30,7 @@ việc `seo-gsc-rank-check` có thể là owner hay assist tuỳ ai chịu trác
 
 | Vai trò | Nghĩa là | Transport |
 | --- | --- | --- |
-| **owner** | Worker là người đảm nhiệm chính. Evidence của nó **chính là** deliverable được nghiệm thu | **app** — Anti thì mở box chat xem được; Codex thì chỉ được thread resume được, xem mục dưới |
+| **owner** | Worker là người đảm nhiệm chính. Evidence của nó **chính là** deliverable được nghiệm thu | **app** — mở box chat để owner kiểm soát bằng mắt. Đúng cho **cả hai** runtime, kiểm bằng mắt 25/08 |
 | **assist** | Worker làm nguyên liệu cho deliverable mà Claude mới là người viết (Anti chạy browser lấy trang, Codex research song song nhiều nhánh) | **headless** |
 
 Phép thử duy nhất:
@@ -57,7 +57,7 @@ ghi transport vào đó là ghi một box chat chưa từng mở.
 | Transport | Cơ chế | Có stdout? |
 | --- | --- | --- |
 | `headless` | Anti: `agy -p --output-format json`. Codex: `codex exec` | **Có** — trả về Claude |
-| `app` | Anti: `agentapi new-conversation` → session **hiện trong Antigravity 2.0**, xem được bằng mắt (owner xác nhận 25/08); adapter poll bằng file evidence. Codex: `codex-run.mjs --mode app` → companion `task --background` → thread CLI thật, resume được, **không hiện trong app desktop nào**; chờ bằng `status --wait` | Anti **không**; Codex **có** (`result <job-id>`) |
+| `app` | Anti: `agentapi new-conversation` → session **hiện trong Antigravity 2.0**; adapter poll bằng file evidence. Codex: `codex-run.mjs --mode app` → companion `task --background` → thread **hiện trong app Codex**, tên `Codex Companion Task: {dòng đầu brief}`; chờ bằng `status --wait`. Cả hai đã kiểm bằng mắt 25/08 | Anti **không**; Codex **có** (`result <job-id>`) |
 
 Hai runtime lệch nhau chỗ stdout — đừng suy từ Anti sang Codex. Cả hai đều lấy **file
 evidence** làm phán quyết, stdout chỉ là tiện.
@@ -108,15 +108,19 @@ timeout vẫn giữ riêng vì `--wait` cũng treo được nếu broker chết;
 
 Ba chỗ đã đo và **không** suy diễn được:
 
-- Thread luôn tên `"Codex Task"`, không có cờ đặt tên. Cái phân biệt là `summary` =
-  dòng đầu brief. Nên dòng đầu brief phải là title job.
-- **Thread KHÔNG hiện trong app desktop nào.** Companion `spawn("codex", ["app-server"])`
-  (`app-server.mjs:190`); broker cũng vậy (`app-server-broker.mjs:68`, `disableBroker: true`).
-  App desktop là `ChatGPT.app`/`CodexBar.app` — runtime khác, và `lsof` cho thấy không
-  process app nào mở `~/.codex/sessions`. Thread có thật, lưu ở
-  `~/.codex/sessions/.../rollout-*.jsonl`, quan sát bằng `codex resume <id>` hoặc
-  `status`/`result`/log file. Nên với Codex, `app` mua được **thread resume được**, không
-  mua được **cái để ngồi xem**. Đo 25/08, phase 3.
+- Field `title` trong JSON luôn là `"Codex Task"`, không có cờ đặt tên — **nhưng app
+  hiển thị theo `summary`**: danh sách thread hiện `Codex Companion Task: {dòng đầu brief}`
+  (kiểm bằng mắt 25/08). Nên dòng đầu brief phải là title job; đó là thứ duy nhất phân biệt
+  các thread trong app. Đừng kết luận từ riêng field `title` như phase 2 từng làm.
+- Thread **hiện trong app Codex**, và 2 job Codex song song thì **hiện đủ 2**, không cái
+  nào bị nuốt (đo 25/08, run B). Thread cũng lưu trên đĩa ở
+  `~/.codex/sessions/.../rollout-*.jsonl` và resume được bằng `codex resume <id>`.
+- **Cảnh báo cho lần đo sau:** companion `spawn("codex", ["app-server"])`
+  (`app-server.mjs:190`) nên process app-server đó *không phải* process của app desktop.
+  Từ đó **không** suy ra được thread vắng mặt trong app: app đọc rollout theo yêu cầu, nên
+  `lsof` không thấy handle và storage app không chứa thread id. Cả hai đều là bằng chứng
+  vắng mặt vô giá trị — 25/08 đã kết luận sai một lần vì chúng. Chỉ mắt người mới trả lời
+  được câu này.
 - `sessionRuntime` **không** có ở `status <job-id>` (trả `null`). Nó chỉ có ở lệnh
   `setup` (`codex-companion.mjs:208`), nên adapter không ghi được transport mode từ đó.
   Tự tính thay: `broker.json` có `endpoint` → `shared` (`codex.mjs:906-922`).
