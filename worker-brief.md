@@ -5,6 +5,20 @@ Một profile cho cả 3 worker. Brief nói **WHAT + NEED**, không nói HOW.
 Phép thử: chỉ viết thứ worker **không tự suy ra được** từ file + `SKILL.md`. Trần 2 KB.
 Lưu bản đã gửi tại `{reports_path}/brief-{runtime}-{seq}.md`.
 
+## Lệnh chạm guard thì cấp nguyên văn
+
+`MWG_CREW_ROLE=worker` chặn `createRun`, nên **worker không chạy được test của
+`mwg-agent-crew/`**. Đo 25/08: cả hai worker Codex đều vướng; một con tự lách bằng
+`env -u MWG_CREW_ROLE` rồi khai ra trong evidence.
+
+Job nào cần chạy test thì brief **cấp sẵn nguyên văn** lệnh đó ở mục `## Lệnh được
+cấp sẵn`. Để worker tự đoán rằng nó được phép lách guard là dạy nó sai thứ: lần sau
+nó lách guard khác mà không hỏi. Cấp sẵn giữ được cả hai — test chạy được, và việc
+gỡ guard vẫn là quyết định của dispatcher, ghi trong brief để audit được.
+
+Chốt thật chặn đệ quy là `depth` trong manifest, không phải env var này. Cấp `env -u`
+cho một lệnh test **không** nới `depth`.
+
 ## Template
 
 ```markdown
@@ -38,6 +52,10 @@ KHÔNG ghi file nào ngoài danh sách trên.
 - Không đọc `.env`/secret/token. Không sửa Protected Files của `CLAUDE.md`.
 - Sheet read-only trừ khi brief ghi rõ. Không dispatch worker khác (`MWG_CREW_ROLE=worker`).
 - Cost gate {cost_gate}: gặp thì DỪNG, trả BLOCKED / COST_GATE.
+
+## Lệnh được cấp sẵn
+- {lệnh cần env đặc biệt, cấp nguyên văn — vd chạy test module:
+  `env -u MWG_CREW_ROLE node mwg-agent-crew/tests/<file>.test.mjs`}
 
 ## Kết thúc
 

@@ -51,8 +51,11 @@ một agent chịu hợp tác, không phải hàng rào — agent nào cũng uns
 thật là `depth` trong manifest: `depth > 1` bị từ chối, và cái đó nằm trên đĩa, worker
 không sửa được bằng env.
 
-Nên brief nào cần chạy test module thì nói rõ dùng `env -u MWG_CREW_ROLE` cho **đúng
-lệnh test**, thay vì để worker tự đoán rằng nó được phép lách.
+Quyết ngày 25/08: brief nào cần chạy test module thì **cấp sẵn nguyên văn** lệnh
+`env -u MWG_CREW_ROLE ...` ở mục `## Lệnh được cấp sẵn`, chỉ cho đúng lệnh test.
+Để worker tự đoán rằng nó được phép lách guard là dạy nó sai thứ — lần sau nó gỡ
+guard khác mà không hỏi. Cấp sẵn giữ được cả hai: test chạy được, và việc gỡ vẫn là
+quyết định của dispatcher, nằm trong brief để audit.
 
 ## Scripts
 
