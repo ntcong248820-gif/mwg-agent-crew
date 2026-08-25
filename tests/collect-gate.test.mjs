@@ -44,6 +44,9 @@ function newRun({ jobs, at = Date.now() }) {
   for (const job of jobs) {
     const added = addJob(manifestPath, {
       worker: job.worker ?? "codex",
+      // These cases predate the transport rule and none of them turn on it, so
+      // they take the shape the historical runs actually had: assist, headless.
+      role: job.role ?? "assist",
       title: job.title ?? "job",
       evidence: job.evidence,
       filesMayModify: job.filesMayModify,
@@ -529,17 +532,99 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
     runDir: join(ws, RUN_REL), runId: "test", task: TASK, workspace: ws, depth: 0,
   });
   const anti = addJob(manifestPath, {
-    worker: "antigravity", model: "gemini-3.7-flash-low",
+    worker: "antigravity", model: "gemini-3.7-flash-low", role: "assist",
     title: "j1", evidence: join(RUN_REL, "w1.md"),
   });
   const codex = addJob(manifestPath, {
-    worker: "codex", effort: "medium", title: "j2", evidence: join(RUN_REL, "w2.md"),
+    worker: "codex", effort: "medium", role: "assist",
+    title: "j2", evidence: join(RUN_REL, "w2.md"),
   });
   t.check("addJob records the model it was given", anti.model, "gemini-3.7-flash-low");
   t.check("addJob records the Codex effort tier", codex.effort, "medium");
   const saved = readManifest(manifestPath).jobs;
   t.check("...and both survive the write", `${saved[0].model}/${saved[1].effort}`, "gemini-3.7-flash-low/medium");
   t.check("a job given neither is explicit about it", `${saved[0].effort}`, "null");
+}
+
+// --- transport follows from role, and the manifest records both ---
+{
+  // "app when the user wants to watch" was not a checkable rule, so the 34
+  // historical jobs carry no answer to why any one of them went where it did.
+  const ws = tmpWorkspace("transport-");
+  execFileSync("git", ["init", "-q"], { cwd: ws });
+  const { manifestPath } = createRun({
+    runDir: join(ws, RUN_REL), runId: "test", task: TASK, workspace: ws, depth: 0,
+  });
+
+  t.check("a version-3 manifest is stamped as such", readManifest(manifestPath).version, 3);
+
+  const owner = addJob(manifestPath, {
+    worker: "antigravity", role: "owner", model: "flash",
+    title: "owner job", evidence: join(RUN_REL, "t1.md"),
+  });
+  t.check("an owner job defaults to app", `${owner.role}/${owner.transport}`, "owner/app");
+
+  const assist = addJob(manifestPath, {
+    worker: "codex", role: "assist", effort: "low",
+    title: "assist job", evidence: join(RUN_REL, "t2.md"),
+  });
+  t.check("an assist job defaults to headless", `${assist.role}/${assist.transport}`, "assist/headless");
+
+  const overridden = addJob(manifestPath, {
+    worker: "antigravity", role: "owner", transport: "headless", model: "flash",
+    note: "owner đi xa, không ai ngồi xem box chat",
+    title: "override", evidence: join(RUN_REL, "t3.md"),
+  });
+  t.check("an override with a reason is accepted", overridden.transport, "headless");
+  t.check("...and the reason travels with the job", overridden.notes[0].startsWith("owner đi xa"), "true");
+
+  const claude = addJob(manifestPath, {
+    worker: "claude", role: "owner", model: "claude-opus-5",
+    title: "claude job", evidence: join(RUN_REL, "t4.md"),
+  });
+  t.check("a claude job records a role but no transport", `${claude.role}/${claude.transport}`, "owner/null");
+
+  // Each refusal below is a way the field could have gone back to being decided
+  // by feel, or to recording something nothing honours.
+  const refuses = (name, job, want) => {
+    let msg = "no throw";
+    try { addJob(manifestPath, { title: "x", evidence: join(RUN_REL, "x.md"), ...job }); }
+    catch (err) { msg = err.message; }
+    t.check(name, msg.includes(want), "true");
+  };
+  refuses("a job with no role is refused", { worker: "codex" }, 'needs role "owner" or "assist"');
+  refuses("...and the error says how to decide", { worker: "codex" }, "who answers for this job's acceptance?");
+  refuses("a bogus role is refused", { worker: "codex", role: "boss" }, 'needs role "owner" or "assist"');
+  refuses("a bogus transport is refused",
+    { worker: "codex", role: "owner", transport: "carrier-pigeon" }, 'must be "app" or "headless"');
+  refuses("an override with no reason is refused",
+    { worker: "codex", role: "owner", transport: "headless" }, "with no reason");
+  refuses("a transport on a claude job is refused",
+    { worker: "claude", role: "owner", transport: "app" }, "has no transport");
+  refuses("the retired `mode` field is refused loudly",
+    { worker: "codex", role: "assist", mode: "headless" }, "`mode` is gone");
+
+  const saved = readManifest(manifestPath).jobs;
+  t.check("every job on disk carries a role", saved.every((j) => j.role), "true");
+  t.check("...and none kept the old mode field", saved.some((j) => "mode" in j), "false");
+}
+
+// --- a version-2 manifest predates role, and must stay readable ---
+{
+  // The version is a marker for reading absence, not a gate on old files: the
+  // same bump broke every run on disk once already, when the check was `===`.
+  const ws = tmpWorkspace("v2-read-");
+  const dir = join(ws, RUN_REL);
+  const mp = join(dir, "manifest.json");
+  writeFile(mp, `${JSON.stringify({
+    version: 2, runId: "old", task: TASK, workspace: ws, dispatcher: "claude", depth: 0,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    jobs: [{ seq: 1, worker: "codex", mode: "headless", status: "done", evidence: join(RUN_REL, "w1.md") }],
+  }, null, 2)}\n`);
+  let read = "threw";
+  try { read = `${readManifest(mp).jobs[0].mode}`; } catch (err) { read = `threw: ${err.message}`; }
+  t.check("a version-2 manifest still reads", read, "headless");
+  t.check("...and is not asked for a role it never had", `${readManifest(mp).jobs[0].role}`, "undefined");
 }
 
 process.exit(t.finish() ? 0 : 1);

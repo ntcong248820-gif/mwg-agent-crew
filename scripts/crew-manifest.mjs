@@ -21,11 +21,14 @@ const LOCK_POLL_MS = 50;
 /**
  * Bumped to 2 when the adapters started recording who delivered a job
  * (`exitCode` / `conversationId`) and how long it was allowed to run
- * (`timeoutMs`). The collect gate reads the version to know whether the absence
- * of those fields means something: on a version-1 manifest it means nothing,
- * because nothing wrote them yet.
+ * (`timeoutMs`). Bumped to 3 when every job started carrying why it was
+ * dispatched the way it was (`role`) and which way that is (`transport`).
+ *
+ * The collect gate reads the version to know whether the absence of those
+ * fields means something: on a version-1 manifest it means nothing, because
+ * nothing wrote them yet.
  */
-export const MANIFEST_VERSION = 2;
+export const MANIFEST_VERSION = 3;
 
 class ManifestError extends Error {
   constructor(message) {
@@ -194,6 +197,71 @@ export function createRun({ runDir, runId, task, workspace, depth = 0, dispatche
 }
 
 /**
+ * Who answers for this job's acceptance. `owner` means the worker does: its
+ * evidence IS the deliverable. `assist` means Claude does, and the job is
+ * material for something Claude writes.
+ */
+export const ROLES = new Set(["owner", "assist"]);
+export const TRANSPORTS = new Set(["app", "headless"]);
+
+/**
+ * An owner job opens a chat box so the person who will be judged on the output
+ * can watch it being made; an assist job has no audience, so it runs headless
+ * and hands its stdout back. Recording the role next to the transport keeps the
+ * reason separable from the consequence: change this default later and old runs
+ * still say what the old decision was based on.
+ */
+const DEFAULT_TRANSPORT = { owner: "app", assist: "headless" };
+
+/**
+ * The previous rule -- "app when the user wants to watch" -- was not a rule: it
+ * could not be checked, so 34 historical jobs split 10/24 between the two
+ * transports with no way to ask why any single one went where it went.
+ */
+function resolveRouting(job) {
+  if (!ROLES.has(job.role)) {
+    throw new ManifestError(
+      `job needs role "owner" or "assist", got ${JSON.stringify(job.role ?? null)}\n` +
+      `  → owner: the worker answers for acceptance; its evidence is the deliverable\n` +
+      `  → assist: the job is material for a deliverable Claude writes\n` +
+      `  → test: who answers for this job's acceptance?`,
+    );
+  }
+  if ("mode" in job) {
+    throw new ManifestError(
+      "`mode` is gone; pass `transport: \"app\" | \"headless\"` instead\n" +
+      "  → transport now follows from role, so it is recorded with the reason next to it",
+    );
+  }
+  // Claude is the dispatcher. Nothing is spawned for a Claude job, so there is
+  // no transport to record -- writing one would put a chat box in the manifest
+  // that never opened.
+  if (job.worker === "claude") {
+    if (job.transport != null) {
+      throw new ManifestError(
+        `a claude job has no transport (got ${JSON.stringify(job.transport)})\n` +
+        `  → Claude does the work in-process; nothing is dispatched to record`,
+      );
+    }
+    return { role: job.role, transport: null };
+  }
+  const fallback = DEFAULT_TRANSPORT[job.role];
+  const transport = job.transport ?? fallback;
+  if (!TRANSPORTS.has(transport)) {
+    throw new ManifestError(
+      `transport must be "app" or "headless", got ${JSON.stringify(transport)}`,
+    );
+  }
+  if (transport !== fallback && !job.note) {
+    throw new ManifestError(
+      `job overrides the ${job.role} default transport (${fallback} → ${transport}) with no reason\n` +
+      `  → pass note: "<why>"; an override without one is transport picked by feel again`,
+    );
+  }
+  return { role: job.role, transport };
+}
+
+/**
  * Jobs are appended with an explicit seq so evidence paths and report ordering
  * stay stable even when jobs finish out of order.
  */
@@ -201,10 +269,12 @@ export function addJob(manifestPath, job) {
   let added;
   updateManifest(manifestPath, (m) => {
     const seq = m.jobs.length + 1;
+    const { role, transport } = resolveRouting(job);
     added = {
       seq,
       worker: job.worker,
-      mode: job.mode ?? null,
+      role,
+      transport,
       model: job.model ?? null,
       // Codex takes its tier as a reasoning effort rather than a model name, so
       // recording only `model` would leave every Codex job looking unset.
@@ -226,7 +296,9 @@ export function addJob(manifestPath, job) {
       endedAt: null,
       durationSec: null,
       exitCode: null,
-      notes: [],
+      // A transport override lands here so the justification travels with the
+      // job into the collect report, not just into whoever ran the command.
+      notes: job.note ? [job.note] : [],
       ...job.extra,
     };
     m.jobs.push(added);

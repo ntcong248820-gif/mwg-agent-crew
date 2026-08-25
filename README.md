@@ -150,6 +150,30 @@ bước đó, job đang chạy nằm trong manifest với `startedAt: null` — 
 biệt được job đang làm với job chưa từng khởi động, và mọi file nó ghi trong lúc
 chạy đều không quy được cho ai.
 
+### Transport chọn theo vai trò, không theo cảm giác
+
+Job đi `app` hay `headless` được quyết bằng một câu hỏi kiểm được:
+
+> **Ai chịu trách nhiệm về acceptance của đầu ra job này?**
+
+Chính worker → `role: owner` → `transport: app`: mở box chat để người sẽ bị chấm về
+đầu ra đó xem được lúc nó đang làm. Claude → `role: assist` → `transport: headless`:
+job chỉ là nguyên liệu, không có ai cần ngồi xem, và stdout trả về cho Claude dùng.
+
+Tiêu chí trước đó không kiểm được, nên 34 job lịch sử chia 10 app / 24 headless mà
+không truy được vì sao job nào đi đường nào. Giờ `addJob` **đòi** `role` và ghi cả
+hai field: `role` là lý do, `transport` là hệ quả. Tách ra vì đổi mặc định về sau
+(ví dụ owner job ngắn thì khỏi mở box chat) mà gộp một field là mất luôn dữ liệu để
+biết quyết định cũ dựa trên gì.
+
+Ghi đè mặc định phải kèm `note`. Ghi đè không note bị từ chối — đó chính là đường
+quay lại chọn theo cảm tính, chỉ khoác thêm một field.
+
+`worker: "claude"` có `role` nhưng `transport: null`: không process nào được bắn, ghi
+transport vào đó là ghi một box chat chưa từng mở. Và `mode` — field cũ, chưa từng có
+ai đọc bằng code — bị từ chối luôn thay vì để nó âm thầm biến mất: hai field ghi cùng
+một sự thật là hai field sẽ lệch nhau.
+
 ### `MANIFEST_VERSION` là mốc để đọc sự vắng mặt
 
 WARN "evidence không do runtime giao" dựa vào chỗ vắng `exitCode`/`conversationId`.

@@ -105,7 +105,7 @@ t.check("evidence with no Status line also exits 3", noStatus.exit, 3);
 // --- the manifest must record a death, which is why this adapter exists ----
 const runDirAbs = join(ws, RUN_DIR_REL, "manifest-case");
 const { manifestPath } = createRun({ runDir: runDirAbs, runId: "test", task: "t", workspace: ws, depth: 0 });
-addJob(manifestPath, { worker: "codex", title: "watchdog", evidence: join(RUN_DIR_REL, "manifest-case", "killed.md") });
+addJob(manifestPath, { worker: "codex", role: "assist", title: "watchdog", evidence: join(RUN_DIR_REL, "manifest-case", "killed.md") });
 run({
   mode: "stderr_only",
   evidence: join(RUN_DIR_REL, "manifest-case", "killed.md"),
@@ -130,7 +130,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   const retryDir = join(ws, RUN_DIR_REL, "retry-case");
   const { manifestPath: mp } = createRun({ runDir: retryDir, runId: "retry", task: "t", workspace: ws, depth: 0 });
   const ev = join(RUN_DIR_REL, "retry-case", "ok.md");
-  addJob(mp, { worker: "codex", title: "retry", evidence: ev });
+  addJob(mp, { worker: "codex", role: "assist", title: "retry", evidence: ev });
   run({ mode: "stderr_only", evidence: ev, extra: ["--idle-timeout", "3s", "--manifest", mp, "--job", "1"] });
   t.check("the failed attempt records a failure", Boolean(readManifest(mp).jobs[0].failure), "true");
   const logDir = resolveLogDir(join(ws, ev), ws);
