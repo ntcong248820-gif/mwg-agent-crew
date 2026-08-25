@@ -47,6 +47,9 @@ function newRun({ jobs, at = Date.now() }) {
       // These cases predate the transport rule and none of them turn on it, so
       // they take the shape the historical runs actually had: assist, headless.
       role: job.role ?? "assist",
+      // Both roles default to headless, so a case that needs an app job has to
+      // ask for it and say why -- same as a real dispatch does.
+      ...(job.transport ? { transport: job.transport, note: job.note ?? "test case needs an app job" } : {}),
       title: job.title ?? "job",
       evidence: job.evidence,
       filesMayModify: job.filesMayModify,
@@ -562,7 +565,7 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
     worker: "antigravity", role: "owner", model: "flash",
     title: "owner job", evidence: join(RUN_REL, "t1.md"),
   });
-  t.check("an owner job defaults to app", `${owner.role}/${owner.transport}`, "owner/app");
+  t.check("an owner job defaults to headless", `${owner.role}/${owner.transport}`, "owner/headless");
 
   const assist = addJob(manifestPath, {
     worker: "codex", role: "assist", effort: "low",
@@ -571,12 +574,12 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   t.check("an assist job defaults to headless", `${assist.role}/${assist.transport}`, "assist/headless");
 
   const overridden = addJob(manifestPath, {
-    worker: "antigravity", role: "owner", transport: "headless", model: "flash",
-    note: "owner đi xa, không ai ngồi xem box chat",
+    worker: "antigravity", role: "owner", transport: "app", model: "flash",
+    note: "job này sẽ gặp prompt permission, cần người ngồi trả",
     title: "override", evidence: join(RUN_REL, "t3.md"),
   });
-  t.check("an override with a reason is accepted", overridden.transport, "headless");
-  t.check("...and the reason travels with the job", overridden.notes[0].startsWith("owner đi xa"), "true");
+  t.check("an override with a reason is accepted", overridden.transport, "app");
+  t.check("...and the reason travels with the job", overridden.notes[0].startsWith("job này sẽ gặp"), "true");
 
   const claude = addJob(manifestPath, {
     worker: "claude", role: "owner", model: "claude-opus-5",
@@ -598,7 +601,11 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   refuses("a bogus transport is refused",
     { worker: "codex", role: "owner", transport: "carrier-pigeon" }, 'must be "app" or "headless"');
   refuses("an override with no reason is refused",
-    { worker: "codex", role: "owner", transport: "headless" }, "with no reason");
+    { worker: "codex", role: "owner", transport: "app" }, "with no reason");
+  refuses("...and the refusal names the three cases app is worth its cost in",
+    { worker: "codex", role: "owner", transport: "app" }, "permission prompt a person must answer");
+  refuses("an assist job asking for app without a reason is refused too",
+    { worker: "antigravity", role: "assist", transport: "app" }, "with no reason");
   refuses("a transport on a claude job is refused",
     { worker: "claude", role: "owner", transport: "app" }, "has no transport");
   refuses("the retired `mode` field is refused loudly",
@@ -635,11 +642,13 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   const { ws, manifestPath } = newRun({
     jobs: [
       {
-        worker: "codex", role: "owner", evidence: join(RUN_REL, "app1.md"), body: DONE, status: "done",
+        worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau",
+        evidence: join(RUN_REL, "app1.md"), body: DONE, status: "done",
         patch: { conversationId: "01a037ab-924f-7fe1-b76a-9bfd7e329ded", exitCode: null, transportMode: "app" },
       },
       {
-        worker: "antigravity", role: "owner", evidence: join(RUN_REL, "app2.md"), body: DONE, status: "done",
+        worker: "antigravity", role: "owner", transport: "app", note: "sẽ gặp prompt permission",
+        evidence: join(RUN_REL, "app2.md"), body: DONE, status: "done",
         patch: { conversationId: "8f14e45f-ceea-467a-9e6b-1d2c3a4b5c6d", exitCode: null },
       },
     ],
@@ -652,7 +661,10 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
 
   // The same job with nothing from the runtime is the case the WARN is for.
   const bare = newRun({
-    jobs: [{ worker: "codex", role: "owner", evidence: join(RUN_REL, "bare.md"), body: DONE, status: "done" }],
+    jobs: [{
+      worker: "codex", role: "owner", transport: "app", note: "việc khám phá, chưa viết nổi acceptance",
+      evidence: join(RUN_REL, "bare.md"), body: DONE, status: "done",
+    }],
   });
   const rb = collectRun(bare.manifestPath, { workspace: bare.ws });
   t.check("an app job with no thread id still WARNs", rb.rows[0].flags.includes("WARN"), "true");

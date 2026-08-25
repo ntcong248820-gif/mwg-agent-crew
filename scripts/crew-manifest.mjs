@@ -205,13 +205,20 @@ export const ROLES = new Set(["owner", "assist"]);
 export const TRANSPORTS = new Set(["app", "headless"]);
 
 /**
- * An owner job opens a chat box so the person who will be judged on the output
- * can watch it being made; an assist job has no audience, so it runs headless
- * and hands its stdout back. Recording the role next to the transport keeps the
- * reason separable from the consequence: change this default later and old runs
- * still say what the old decision was based on.
+ * Headless is the default for both roles because it is the transport the
+ * harness can actually observe. Measured 2026-08-25 across six app-transport
+ * jobs: an app job reports no token usage and no reply text, the Antigravity
+ * adapter passes `runtimeOk: true` unconditionally so silent failure stops
+ * being detectable, the Codex adapter runs without an idle watchdog and leaves
+ * `exitCode` null, and the app's thread list does not update live -- the owner
+ * has to quit and reopen it to see anything. So "open a box so the owner can
+ * watch" buys less than it costs.
+ *
+ * Role stays recorded next to transport. Role is the reason (who answers for
+ * this job's acceptance); transport is the consequence. Keeping them separate
+ * is what let this default change without making old runs unreadable.
  */
-const DEFAULT_TRANSPORT = { owner: "app", assist: "headless" };
+const DEFAULT_TRANSPORT = { owner: "headless", assist: "headless" };
 
 /**
  * The previous rule -- "app when the user wants to watch" -- was not a rule: it
@@ -255,7 +262,10 @@ function resolveRouting(job) {
   if (transport !== fallback && !job.note) {
     throw new ManifestError(
       `job overrides the ${job.role} default transport (${fallback} → ${transport}) with no reason\n` +
-      `  → pass note: "<why>"; an override without one is transport picked by feel again`,
+      `  → pass note: "<why>"; an override without one is transport picked by feel again\n` +
+      `  → app is worth its cost in three cases: an Antigravity job that will hit a\n` +
+      `    permission prompt a person must answer, exploratory work with no acceptance\n` +
+      `    writable in advance, or a thread that must be resumable in a later session`,
     );
   }
   return { role: job.role, transport };

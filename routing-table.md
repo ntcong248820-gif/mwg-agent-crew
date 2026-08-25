@@ -22,34 +22,58 @@ khi có mẫu.
 | **Codex** | tool trong `mwg-seo-analytics/`, `mwg-seo-planning/scripts/`, workflow n8n, dedup/clustering, `batch-llm-skill` runs, transform data phức tạp |
 | **Antigravity** | `seo-keyword-research`, `seo-gsc-rank-check` (bulk), `image-seo-pipeline`, `content-html-optimizer`, readback/export Sheet, chuẩn hoá bảng, fill metadata theo mẫu, research đối thủ, audit outline nhiều URL, việc cần browser tools |
 
-Bảng này chỉ trả lời **ai làm**. Nó không còn cột mode: transport không phải thuộc
-tính của loại việc, nó là thuộc tính của **vai trò worker trong run đó** — cùng một
-việc `seo-gsc-rank-check` có thể là owner hay assist tuỳ ai chịu trách nhiệm về đầu ra.
+Bảng này chỉ trả lời **ai làm**. Nó không có cột transport: transport không phải thuộc
+tính của loại việc. Cùng một việc `seo-gsc-rank-check` có thể là owner hay assist tuỳ ai
+chịu trách nhiệm về đầu ra — và cả hai đều chạy `headless` trừ khi có lý do viết ra.
 
 ## Transport
 
-| Vai trò | Nghĩa là | Transport |
+**`headless` là mặc định cho cả `owner` và `assist`.** Chọn `app` là ghi đè, và ghi đè
+phải kèm `note` nói vì sao — không note thì `addJob` từ chối.
+
+| Vai trò | Nghĩa là | Transport mặc định |
 | --- | --- | --- |
-| **owner** | Worker là người đảm nhiệm chính. Evidence của nó **chính là** deliverable được nghiệm thu | **app** — mở box chat để owner kiểm soát bằng mắt. Đúng cho **cả hai** runtime, kiểm bằng mắt 25/08 |
+| **owner** | Worker là người đảm nhiệm chính. Evidence của nó **chính là** deliverable được nghiệm thu | **headless** |
 | **assist** | Worker làm nguyên liệu cho deliverable mà Claude mới là người viết (Anti chạy browser lấy trang, Codex research song song nhiều nhánh) | **headless** |
 
-Phép thử duy nhất:
+`role` không còn quyết transport, nhưng **vẫn bắt buộc** và vẫn là phép thử:
 
 > **Ai chịu trách nhiệm về acceptance của đầu ra job này?**
-> Chính worker → `role: owner` → app. Claude → `role: assist` → headless.
+> Chính worker → `role: owner`. Claude → `role: assist`.
 
-**Không** phải "việc nặng hay nhẹ", **không** phải "lâu hay nhanh". Job assist chạy
-20 phút vẫn headless; job owner chạy 2 phút vẫn mở box chat.
+`role` quyết cách **chấm** output. `transport` quyết harness **thấy được gì**. Hai trục
+khác nhau — rule 25/08 trước đó nối chúng lại là nối sai, và phép đo phase 3 của
+`260825-1203-crew-transport-mode-split` cho thấy vì sao.
 
-Tiêu chí cũ dựa vào việc user có thích theo dõi trong app hay không — đó không phải
-rule, vì không có cách nào kiểm.
-Kết quả: 34 job lịch sử chia 10 app / 24 headless mà không truy được vì sao job nào đi
-đường nào. `addJob` giờ đòi `role` và ghi cả `role` lẫn `transport` vào manifest: `role`
-là **lý do**, `transport` là **hệ quả**, tách ra để sau này đổi mặc định vẫn còn dữ liệu
-biết quyết định cũ dựa trên gì.
+### Vì sao headless là mặc định (đo 2026-08-25, 6 job app thật)
 
-Ghi đè được, nhưng phải kèm `note` nói vì sao. Ghi đè không note bị từ chối — đó đúng là
-đường quay lại chọn theo cảm tính.
+| Đo được | Nghĩa là |
+| --- | --- |
+| Anti app truyền `runtimeOk: true` vô điều kiện; không `usage`, không `response`, không `numTurns` | Mất khả năng phát hiện silent-fail mà headless có (`SUCCESS` + `response` rỗng = bị chặn ở prompt permission) |
+| Codex app: `exitCode: null`, **không watchdog**, không gọi `result` | Job treo chỉ chết khi hết trần timeout; text reply của worker bị bỏ |
+| Thread app **không hiện live** — rollout trên đĩa ở +8s, mắt chỉ thấy sau khi tắt/mở lại app | "Mở app ngồi xem cho chắc" không mua được cái nó hứa |
+
+Nói gọn: `app` **quan sát yếu hơn** `headless` ở cả hai runtime. Nên nó phải là ngoại lệ
+có lý do, không phải mặc định.
+
+### Ba ca `app` đáng giá (user chốt 25/08)
+
+1. **Job Anti sẽ gặp prompt permission cần người trả.** Anti app cho người bấm đồng ý;
+   headless gặp prompt là silent-fail. Đây là ca app mạnh nhất còn lại.
+2. **Việc mở/khám phá, chưa viết nổi acceptance trước.** Không có tiêu chí chấm thì mất
+   evidence-first cũng không mất gì; đổi lại owner nhìn được quá trình.
+3. **Cần thread resume làm tiếp buổi sau.** `codex resume <id>` chỉ có với thread app.
+
+Ngoài 3 ca này, chọn `app` là đang trả giá quan sát để lấy một thứ chưa nêu được.
+
+### Lịch sử: vì sao có `role`
+
+Tiêu chí cũ hơn nữa dựa vào việc user có thích theo dõi trong app hay không — đó không
+phải rule, vì không có cách nào kiểm. Kết quả: 34 job lịch sử chia 10 app / 24 headless
+mà không truy được vì sao job nào đi đường nào. `addJob` giờ đòi `role` và ghi cả `role`
+lẫn `transport` vào manifest: `role` là **lý do**, `transport` là **hệ quả**. Chính vì
+tách ra mà lần đổi mặc định này không làm run cũ thành vô nghĩa — run cũ vẫn đọc được
+quyết định của nó dựa trên gì.
 
 Job `worker: claude` có `role` nhưng `transport: null`: không có process nào được bắn,
 ghi transport vào đó là ghi một box chat chưa từng mở.

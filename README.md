@@ -63,6 +63,8 @@ node mwg-agent-crew/scripts/codex-run.mjs \
   --manifest <run>/manifest.json --job 2
 ```
 
+`--mode app` chỉ dùng cho job đã xin `app` kèm `note` trong manifest:
+
 ```bash
 node mwg-agent-crew/scripts/codex-run.mjs --mode app \
   --prompt-file <brief.md> \
@@ -178,24 +180,26 @@ bước đó, job đang chạy nằm trong manifest với `startedAt: null` — 
 biệt được job đang làm với job chưa từng khởi động, và mọi file nó ghi trong lúc
 chạy đều không quy được cho ai.
 
-### Transport chọn theo vai trò, không theo cảm giác
+### `headless` là mặc định; `app` là ngoại lệ có lý do viết ra
 
-Job đi `app` hay `headless` được quyết bằng một câu hỏi kiểm được:
+`addJob` **đòi** `role` (`owner` | `assist`), quyết bằng một câu hỏi kiểm được:
 
 > **Ai chịu trách nhiệm về acceptance của đầu ra job này?**
 
-Chính worker → `role: owner` → `transport: app`: mở box chat để người sẽ bị chấm về
-đầu ra đó xem được lúc nó đang làm. Claude → `role: assist` → `transport: headless`:
-job chỉ là nguyên liệu, không có ai cần ngồi xem, và stdout trả về cho Claude dùng.
+Nhưng `role` **không** quyết transport. Transport mặc định là `headless` cho cả hai,
+vì `headless` là transport harness quan sát được: `exitCode`, `usage`, text reply,
+watchdog. Đo 25/08 trên 6 job app thật: Anti app không có cái nào trong số đó và truyền
+`runtimeOk: true` vô điều kiện; Codex app không watchdog, `exitCode: null`; thread app
+**không hiện live** — lên đĩa sau ~8s nhưng phải tắt/mở lại app mới thấy.
 
-Tiêu chí trước đó không kiểm được, nên 34 job lịch sử chia 10 app / 24 headless mà
-không truy được vì sao job nào đi đường nào. Giờ `addJob` **đòi** `role` và ghi cả
-hai field: `role` là lý do, `transport` là hệ quả. Tách ra vì đổi mặc định về sau
-(ví dụ owner job ngắn thì khỏi mở box chat) mà gộp một field là mất luôn dữ liệu để
-biết quyết định cũ dựa trên gì.
+`app` đáng giá đúng 3 ca, và mỗi ca phải viết ra trong `note`: job Anti sẽ gặp prompt
+permission cần người trả; việc mở/khám phá chưa viết nổi acceptance; cần thread resume
+làm tiếp buổi sau. Ghi đè không `note` bị từ chối, và lời từ chối liệt kê luôn 3 ca.
 
-Ghi đè mặc định phải kèm `note`. Ghi đè không note bị từ chối — đó chính là đường
-quay lại chọn theo cảm tính, chỉ khoác thêm một field.
+Vì sao vẫn giữ `role` khi nó không còn quyết transport: `role` là **lý do**, `transport`
+là **hệ quả**. Tiêu chí trước đó không kiểm được, nên 34 job lịch sử chia 10 app / 24
+headless mà không truy được vì sao job nào đi đường nào. Chính vì tách hai field mà lần
+đổi mặc định này không làm run cũ thành vô nghĩa.
 
 `worker: "claude"` có `role` nhưng `transport: null`: không process nào được bắn, ghi
 transport vào đó là ghi một box chat chưa từng mở. Và `mode` — field cũ, chưa từng có

@@ -199,6 +199,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   t.check("...and no fake exit code claiming a clean exit", `${ok.json?.exitCode}`, "null");
   t.check("...while the companion job id stays traceable", ok.json?.companionJobId, "task-fake-0001");
 
+
   // Doctrine: evidence on disk outranks the runtime's verdict, including failed.
   const failed = runApp({ mode: "failed", evidence: join(RUN_DIR_REL, "app-failed.md") });
   t.check("companion says failed but the evidence stands", failed.json?.status, "done");
@@ -211,7 +212,8 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   const mfDir = join(ws, RUN_DIR_REL, "app-timeout-case");
   const { manifestPath: tmp } = createRun({ runDir: mfDir, runId: "app-to", task: "t", workspace: ws, depth: 0 });
   addJob(tmp, {
-    worker: "codex", role: "owner", title: "app timeout",
+    worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau",
+    title: "app timeout",
     evidence: join(RUN_DIR_REL, "app-timeout-case", "late.md"),
   });
   const timedOut = runApp({
@@ -259,7 +261,8 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   const dir = join(ws, RUN_DIR_REL, "transport-clash");
   const { manifestPath: mp } = createRun({ runDir: dir, runId: "clash", task: "t", workspace: ws, depth: 0 });
   addJob(mp, {
-    worker: "codex", role: "owner", title: "filed as app",
+    worker: "codex", role: "owner", transport: "app", note: "việc khám phá, chưa viết nổi acceptance",
+    title: "filed as app",
     evidence: join(RUN_DIR_REL, "transport-clash", "w.md"),
   });
   const clash = run({
