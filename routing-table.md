@@ -70,7 +70,7 @@ Ràng buộc từng runtime:
 | --- | --- |
 | `agy` | nhận tên model đầy đủ; `agy models` liệt kê bản còn sống |
 | `agentapi` | **chỉ** nhận `flash_lite\|flash\|pro\|inherit`, không nhận tên đầy đủ |
-| Codex | `-m` để trống cho codex tự chọn, bậc đặt bằng `--effort`. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
+| Codex | Bậc đặt bằng `--effort`; vẫn truyền `-m` (mặc định config hiện tại `gpt-5.5`) — để trống thì manifest không ghi được model nào đã chạy, đúng cái field này sinh ra để đo. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
 
 **Không truyền `--model` thì không dispatch.** Trước phase 03, mọi job trong mọi
 manifest đều `"model": null` — knob có mà chưa ai bật, nên không có cách nào đo model
