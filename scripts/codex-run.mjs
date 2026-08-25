@@ -29,6 +29,10 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { join, relative, resolve, sep } from "node:path";
 import { resolveCompanion } from "./codex-companion-path.mjs";
+// Static, unlike the `await import` calls further down: a signal handler runs
+// with no chance to await, so the one write it needs has to be resolved before
+// the signal ever arrives.
+import { updateJob as updateJobSync } from "./crew-manifest.mjs";
 import {
   DEFAULT_TIMEOUT,
   GuardError,
@@ -750,7 +754,27 @@ export async function codexRunApp(options) {
   // broker up, a reading taken earlier would miss the runtime it just created.
   await noteRuntime(options, "atDispatch", workspace);
 
-  const { snapshot, settleRetries, settleRaceWhy } = await waitForSettle(companion, jobId, { workspace, timeoutMs });
+  let settled;
+  try {
+    settled = await waitForSettle(companion, jobId, { workspace, timeoutMs });
+  } catch (err) {
+    // The cancel below used to be reachable only through a snapshot. So when the
+    // `status --wait` call itself hung or died -- broker stuck, companion gone --
+    // the adapter recorded a failed job and walked away from a background job
+    // that was still running, still writing, still burning quota, with nobody
+    // watching it. A job this adapter can no longer follow is a job it has to
+    // put down.
+    try {
+      callCompanion(companion, ["cancel", jobId, "--json", "--cwd", workspace], {
+        workspace, timeoutMs: 60_000, what: `cancel ${jobId}`,
+      });
+      process.stderr.write(`codex-run: cancelled ${jobId} sau khi mất dấu\n`);
+    } catch (cancelErr) {
+      process.stderr.write(`codex-run: cancel ${jobId} thất bại: ${cancelErr.message}\n`);
+    }
+    throw err;
+  }
+  const { snapshot, settleRetries, settleRaceWhy } = settled;
 
   try {
     writeFileSync(statusPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
@@ -896,6 +920,43 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   let result = null;
   // Captured before the job starts so a job that dies still carries a duration.
   const dispatchedAt = new Date().toISOString();
+
+  // The adapter exists so that a death is recorded rather than read as
+  // `pending` forever -- and until now its own death was the one death nobody
+  // recorded. A SIGTERM (session closed, supervisor stopping the tree) does not
+  // pass through the catch below: Node exits straight away, leaving the job it
+  // had just marked `running` marked `running` for good.
+  //
+  // Synchronous only, on purpose. A signal handler gets no await, so this uses
+  // the already-imported updateJob path and writes one record, then re-raises
+  // by exiting with the conventional 128+signal code.
+  //
+  // Reaches the headless path, not the app one. Measured 25/08: the app wait
+  // sits inside `spawnSync`, which blocks the event loop, so Node cannot deliver
+  // a signal to any handler until that call returns. This is not worked around
+  // here -- an app job killed mid-wait is recovered through the gate, which is
+  // why `companionJobId` is written at dispatch: the stale-job check plus
+  // `crew-reconcile --cancel-orphans` can still find and put it down. Slower
+  // than a handler, but nothing is lost, and the alternative is rewriting every
+  // companion call to be async for a case the gate already covers.
+  const recordSignal = (name, signo) => {
+    if (opts.manifest && opts.job) {
+      try {
+        updateJobSync(opts.manifest, Number(opts.job), {
+          status: "failed",
+          startedAt: dispatchedAt,
+          endedAt: new Date().toISOString(),
+          failure: `adapter nhận ${name} trước khi job kết thúc`,
+        });
+      } catch { /* nothing left to do about it from inside a signal */ }
+    }
+    console.error(`codex-run: ${name} — đã ghi job là failed`);
+    process.exit(128 + signo);
+  };
+  process.on("SIGTERM", () => recordSignal("SIGTERM", 15));
+  process.on("SIGINT", () => recordSignal("SIGINT", 2));
+  process.on("SIGHUP", () => recordSignal("SIGHUP", 1));
+
   try {
     opts = parseArgv(process.argv.slice(2));
     mode = opts.mode ?? "headless";

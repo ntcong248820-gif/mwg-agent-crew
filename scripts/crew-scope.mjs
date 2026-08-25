@@ -87,6 +87,27 @@ export const PROTECTED_PATHS = [
   "mwg-seo-analytics/.env", "mwg-seo-analytics/config/client_secret.json",
 ];
 
+/**
+ * Protected *directories* from CLAUDE.md — everything under them is protected.
+ *
+ * Split out because the check was an exact-path match, so the eight skill
+ * directories CLAUDE.md protects were protected in the document and unprotected
+ * in the code: a worker editing `.claude/skills/seo-crew/SKILL.md` matched no
+ * entry above, then matched the task's allowed prefixes, and landed in
+ * `inScope`. Prefix-matched here instead.
+ */
+export const PROTECTED_DIRS = [
+  ".agents/skills/", ".codex/skills/", ".claude/skills/", ".gemini/skills/",
+  "mwg-workflow-n8n/.agents/skills/", "mwg-workflow-n8n/.codex/skills/",
+  "mwg-workflow-n8n/.claude/skills/", "mwg-workflow-n8n/.gemini/skills/",
+];
+
+/** True when a path is a protected file, or sits under a protected directory. */
+export function isProtectedPath(path) {
+  if (PROTECTED_PATHS.includes(path)) return true;
+  return PROTECTED_DIRS.some((d) => path.startsWith(d));
+}
+
 /** A prefix only means "this directory" if it ends in a separator. */
 function normalizePrefix(p) {
   return p.endsWith("/") || p.endsWith(sep) ? p : `${p}/`;
@@ -170,6 +191,10 @@ function watchedPaths(workspace, manifest) {
       add(file);
     } catch { /* absent here; nothing to attribute */ }
   }
+  // PROTECTED_DIRS are deliberately not walked: unlike the files above they are
+  // git-tracked, so `changedPaths` already reports any write inside them. What
+  // they needed was the right classification, not discovery -- see
+  // isProtectedPath. Walking them would add thousands of paths for nothing.
   for (const prefix of declaredPrefixes(manifest)) {
     const root = join(workspace, prefix);
     let entries;
@@ -319,19 +344,29 @@ export function collectWriteScope(manifest, { workspace, graceMs = DEFAULT_GRACE
       bounded: mine ? true : hits.some((h) => h.bounded),
     };
 
-    if (PROTECTED_PATHS.includes(path)) {
-      result.protectedHits.push(entry);
-      continue;
-    }
-    if (allowedFor(manifest, seqs).some((p) => path.startsWith(p))) {
+    const protectedHit = isProtectedPath(path);
+    if (!protectedHit && allowedFor(manifest, seqs).some((p) => path.startsWith(p))) {
       result.inScope.push(entry);
       continue;
     }
     // Dismissal is checked only for something that would otherwise be charged:
     // waiving a path that was never a violation would hide nothing and teach the
     // dispatcher that the flag is free.
+    //
+    // It is checked for a protected hit too, and that is deliberate. This repo
+    // has several sessions working in it at once, so another session editing a
+    // protected path is a real and frequent event. Making protected hits
+    // undismissable would mean no run can ever pass while a neighbour touches
+    // one -- and a gate that cannot be satisfied honestly is a gate people learn
+    // to ignore, which costs more than the case it was guarding. The waiver is
+    // still recorded with its reason, and `protected` stays on the entry so the
+    // report shows what kind of path was waived.
     if (waived.has(path)) {
-      result.dismissed.push(entry);
+      result.dismissed.push({ ...entry, protected: protectedHit || undefined });
+      continue;
+    }
+    if (protectedHit) {
+      result.protectedHits.push(entry);
       continue;
     }
     if (entry.bounded) {

@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 
 const LOCK_STALE_MS = 60_000;
 const LOCK_WAIT_MS = 10_000;
@@ -87,12 +87,17 @@ function acquireLock(manifestPath) {
 }
 
 /** Only release a lock we still own; a reclaimed lock now belongs to someone else. */
-function releaseLock(lock, token) {
+/** True while the lock on disk still carries our stamp. */
+function ownsLock(lock, token) {
   try {
-    if (readFileSync(join(lock, "owner"), "utf8") !== token) return;
+    return readFileSync(join(lock, "owner"), "utf8") === token;
   } catch {
-    return; // no owner stamp means the lock is not ours to remove
+    return false; // gone, or reclaimed and re-stamped by someone else
   }
+}
+
+function releaseLock(lock, token) {
+  if (!ownsLock(lock, token)) return; // not ours to remove
   try {
     rmSync(lock, { recursive: true, force: true });
   } catch { /* already gone */ }
@@ -120,6 +125,12 @@ export function readManifest(manifestPath) {
       `  → update mwg-agent-crew/scripts/ instead of editing the manifest`,
     );
   }
+  // Below 1 is not "an older manifest", it is a malformed one. Version 0 used
+  // to read as ancient history, which silenced the provenance warning that only
+  // fires from version 2 up -- so a hand-edited 0 bought quieter output.
+  if (parsed.version < 1) {
+    throw new ManifestError(`manifest version ${parsed.version} is not a real version (min 1)`);
+  }
   return parsed;
 }
 
@@ -145,6 +156,17 @@ export function updateManifest(manifestPath, mutate) {
     const manifest = readManifest(manifestPath);
     const next = mutate(manifest) ?? manifest;
     next.updatedAt = new Date().toISOString();
+    // Check ownership again, right before writing. A holder slower than
+    // LOCK_STALE_MS gets its lock reclaimed; the successor then reads, mutates
+    // and writes -- and the slow holder used to write its own stale snapshot
+    // on top, silently erasing the successor's work. Losing the lock means
+    // losing the right to write, so this refuses instead of overwriting.
+    if (!ownsLock(lock, token)) {
+      throw new ManifestError(
+        `lost the manifest lock at ${lock} before writing (mutation took over ${LOCK_STALE_MS}ms)\n` +
+        "  → không ghi đè bản của process kế nhiệm; chạy lại thao tác này",
+      );
+    }
     writeManifest(manifestPath, next);
     return next;
   } finally {
@@ -174,10 +196,15 @@ export function createRun({ runDir, runId, task, workspace, depth = 0, dispatche
       `  → a worker is dispatching workers; stop the chain instead of deepening it`,
     );
   }
-  if (process.env.MWG_CREW_ROLE === "worker" && depth === 0) {
+  // Not `depth === 0`. Gating on depth 0 left the exact hole the guard exists
+  // to close: a worker calling createRun({ depth: 1 }) passed both checks and
+  // got a valid run to dispatch from. A worker may not create a run at ANY
+  // depth. Depth 1 is for a dispatcher deliberately opening a sub-run, and a
+  // dispatcher is not running with this variable set.
+  if (process.env.MWG_CREW_ROLE === "worker") {
     throw new ManifestError(
-      "refusing to create a depth-0 run while MWG_CREW_ROLE=worker\n" +
-      "  → a worker cannot start its own dispatch run",
+      `refusing to create a run at depth ${depth} while MWG_CREW_ROLE=worker\n` +
+      "  → a worker cannot start a dispatch run, at any depth",
     );
   }
   const now = new Date().toISOString();
@@ -294,11 +321,74 @@ function resolveRouting(job) {
  * Jobs are appended with an explicit seq so evidence paths and report ordering
  * stay stable even when jobs finish out of order.
  */
+/**
+ * Fields whose value is the reason the gate can be trusted.
+ *
+ * `job.extra` used to spread over everything, so a caller could validate a
+ * transport and then null it out in the same call -- and `assertTransport`
+ * skips a null, so the adapter stopped checking too. `extra` is for carrying
+ * extra facts, never for editing the ones that were just checked.
+ */
+const SEALED_JOB_FIELDS = new Set([
+  "seq", "worker", "role", "transport", "evidence", "status", "filesMayModify",
+]);
+
+/**
+ * Evidence has to be a path inside the workspace, and inside `tasks/`.
+ *
+ * Otherwise the doctrine has a hole with a `/tmp` in it: a job declaring
+ * `evidence: "/tmp/old-pass.md"` gets read as proof if that file happens to
+ * carry a `Status: DONE` line, and the write-scope gate only ever looks at the
+ * working tree, so nothing notices. Evidence that lives where the gate cannot
+ * see it is not evidence.
+ */
+function assertEvidencePath(evidence) {
+  if (typeof evidence !== "string" || evidence.length === 0) {
+    throw new ManifestError(`evidence must be a non-empty path, got ${JSON.stringify(evidence)}`);
+  }
+  if (isAbsolute(evidence)) {
+    throw new ManifestError(
+      `evidence must be a workspace-relative path, got absolute ${evidence}\n` +
+      "  → evidence outside the workspace cannot be checked by the write-scope gate",
+    );
+  }
+  const norm = normalize(evidence);
+  if (norm.startsWith("..")) {
+    throw new ManifestError(`evidence must stay inside the workspace, got ${evidence}`);
+  }
+  if (!norm.startsWith(`tasks${sep}`)) {
+    throw new ManifestError(
+      `evidence must live under tasks/, got ${evidence}\n` +
+      "  → chỉ file trong tasks/ được tính là bằng chứng",
+    );
+  }
+}
+
 export function addJob(manifestPath, job) {
   let added;
   updateManifest(manifestPath, (m) => {
     const seq = m.jobs.length + 1;
     const { role, transport } = resolveRouting(job);
+    assertEvidencePath(job.evidence);
+    // A string here reaches `.map` in the scope gate and throws mid-collect,
+    // which turns a bad declaration into a dead gate.
+    if (job.filesMayModify !== undefined && !Array.isArray(job.filesMayModify)) {
+      throw new ManifestError(
+        `filesMayModify must be an array of path prefixes, got ${typeof job.filesMayModify}`,
+      );
+    }
+    if (job.filesMayModify?.some((x) => typeof x !== "string")) {
+      throw new ManifestError("filesMayModify entries must all be strings");
+    }
+    const extra = { ...job.extra };
+    for (const field of SEALED_JOB_FIELDS) {
+      if (field in extra) {
+        throw new ManifestError(
+          `job.extra không được ghi đè "${field}"\n` +
+          "  → field này vừa được kiểm; sửa nó ở đây là gỡ chốt vừa đặt",
+        );
+      }
+    }
     added = {
       seq,
       worker: job.worker,
@@ -328,7 +418,7 @@ export function addJob(manifestPath, job) {
       // A transport override lands here so the justification travels with the
       // job into the collect report, not just into whoever ran the command.
       notes: job.note ? [job.note] : [],
-      ...job.extra,
+      ...extra,
     };
     m.jobs.push(added);
     return m;
@@ -403,6 +493,19 @@ export function updateJob(manifestPath, seq, patch) {
   updateManifest(manifestPath, (m) => {
     const job = m.jobs.find((j) => j.seq === seq);
     if (!job) throw new ManifestError(`no job with seq ${seq} in ${manifestPath}`);
+    // A free-form patch used to reach `seq`, `transport` and `evidence`. Two
+    // jobs sharing a seq makes this very `find` pick the wrong one; a nulled
+    // transport makes `assertTransport` stop checking; a rewritten evidence
+    // path re-points the proof after the fact. Progress fields are patchable,
+    // identity is not.
+    for (const field of ["seq", "worker", "role", "transport", "evidence"]) {
+      if (field in patch && patch[field] !== job[field]) {
+        throw new ManifestError(
+          `updateJob không được đổi "${field}" của job ${seq}\n` +
+          "  → đây là danh tính của job, không phải tiến độ",
+        );
+      }
+    }
     Object.assign(job, patch);
     if (job.startedAt && job.endedAt) {
       job.durationSec = Math.round((Date.parse(job.endedAt) - Date.parse(job.startedAt)) / 1000);

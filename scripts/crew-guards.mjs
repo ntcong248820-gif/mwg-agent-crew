@@ -24,7 +24,15 @@ export class GuardError extends Error {
 
 /** Accepts Go-style durations because that is what agy's --print-timeout takes. */
 export function parseDuration(value) {
-  const matches = [...String(value).matchAll(/(\d+(?:\.\d+)?)(h|m|s)/g)];
+  const text = String(value).trim();
+  // Anchored on purpose. The unanchored version accepted trailing junk by
+  // ignoring it, so `--timeout 1m30` silently meant 60s rather than 90s and a
+  // legitimate 90-second job got killed at 60. A typo has to be rejected, not
+  // reinterpreted as a smaller number.
+  if (!/^(?:\d+(?:\.\d+)?[hms])+$/.test(text)) {
+    throw new GuardError(`cannot parse duration "${value}"`, 'use forms like "90s", "15m", "1h30m"');
+  }
+  const matches = [...text.matchAll(/(\d+(?:\.\d+)?)(h|m|s)/g)];
   if (matches.length === 0) {
     throw new GuardError(`cannot parse duration "${value}"`, 'use forms like "90s", "15m", "1h30m"');
   }
