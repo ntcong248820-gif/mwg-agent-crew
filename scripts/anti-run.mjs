@@ -364,7 +364,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (opts.manifest && opts.job) {
     try {
       const { readManifest, updateJob } = await import("./crew-manifest.mjs");
-      const prior = readManifest(opts.manifest).jobs.find((j) => j.seq === Number(opts.job))?.notes ?? [];
+      const priorJob = readManifest(opts.manifest).jobs.find((j) => j.seq === Number(opts.job)) ?? {};
+      const prior = [
+        ...(priorJob.notes ?? []),
+        // Carried over before `failure` is cleared below, or the retry would
+        // erase the only record that an earlier attempt died.
+        ...(priorJob.failure ? [`lượt trước fail: ${priorJob.failure}`] : []),
+      ];
       updateJob(opts.manifest, Number(opts.job), {
         notes: result.runtimeVerdict
           ? [...prior, `runtime báo fail (${result.runtimeVerdict}) nhưng evidence tự phán ${result.reportedStatus} — cần người đọc`]
@@ -373,6 +379,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         reportedStatus: result.reportedStatus,
         runtimeVerdict: result.runtimeVerdict,
         conversationId: result.conversationId,
+        // A retry that succeeded must not inherit the previous attempt's
+        // failure: the field would keep firing a WARN on a job that is now
+        // clean, and a WARN that cries on every retried job is one people learn
+        // to scroll past. The history stays in `notes`, which is append-only.
+        failure: undefined,
         startedAt: result.startedAt,
         endedAt: result.endedAt,
         agentDurationSec: result.agentDurationSec ?? null,

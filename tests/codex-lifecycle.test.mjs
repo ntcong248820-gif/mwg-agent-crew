@@ -12,6 +12,7 @@
  * Run: node mwg-agent-crew/tests/codex-lifecycle.test.mjs
  */
 import { spawnSync } from "node:child_process";
+import { readdirSync, renameSync } from "node:fs";
 import { existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createRun, addJob, readManifest } from "../scripts/crew-manifest.mjs";
@@ -120,5 +121,34 @@ t.check("...and the codex version, captured before the run", Boolean(job.codexVe
 const typo = spawnSync("node", [ADAPTER, "--idle-timout", "1s", "--evidence", "tasks/t/x.md"], { encoding: "utf8" });
 t.check("a misspelled flag is refused", typo.status, 1);
 t.check("...and the message prints real CLI spellings", typo.stderr.includes("--idle-timeout") && !typo.stderr.includes("--promptFile"), "true");
+
+// --- a retry that works must not inherit the last attempt's failure -------
+{
+  // Seen live 2026-08-25: a job failed, was retried, succeeded -- and the stale
+  // `failure` kept the collect gate flagging the clean result forever. A WARN
+  // that fires on every retried job is one people stop reading.
+  const retryDir = join(ws, RUN_DIR_REL, "retry-case");
+  const { manifestPath: mp } = createRun({ runDir: retryDir, runId: "retry", task: "t", workspace: ws, depth: 0 });
+  const ev = join(RUN_DIR_REL, "retry-case", "ok.md");
+  addJob(mp, { worker: "codex", title: "retry", evidence: ev });
+  run({ mode: "stderr_only", evidence: ev, extra: ["--idle-timeout", "3s", "--manifest", mp, "--job", "1"] });
+  t.check("the failed attempt records a failure", Boolean(readManifest(mp).jobs[0].failure), "true");
+  const logDir = resolveLogDir(join(ws, ev), ws);
+
+  // The adapter refuses to reuse a log path, so a retry needs the old sidecar
+  // moved aside first. That guard is right -- two attempts interleaved into one
+  // log destroys the evidence -- but it means "retry once" is not a thing an
+  // operator can do without this step, which is why it is asserted here.
+  const refused = run({ mode: "ok", evidence: ev, extra: ["--manifest", mp, "--job", "1"] });
+  t.check("a retry over a live sidecar is refused", refused.exit, 1);
+  t.check("...and the message says what to do", refused.stderr.includes("fresh evidence path"), "true");
+  for (const f of readdirSync(logDir)) renameSync(join(logDir, f), join(logDir, `prev-${f}`));
+
+  run({ mode: "ok", evidence: ev, extra: ["--manifest", mp, "--job", "1"] });
+  const after = readManifest(mp).jobs[0];
+  t.check("the successful retry clears it", after.failure, undefined);
+  t.check("...and the job reads as done", after.status, "done");
+  t.check("...while the history stays in notes", after.notes.length > 0, "true");
+}
 
 process.exit(t.finish() ? 0 : 1);
