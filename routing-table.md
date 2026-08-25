@@ -101,6 +101,30 @@ Hệ quả khi dùng app mode:
   error, không có permission blob). Evidence gate bắt được. Đừng giao việc bắt buộc phải
   ra file cho app mode nếu không ai ngồi xem.
 
+### Worker ghi file bằng shell — đo 2026-08-25
+
+Probe Anti headless: nó gọi `write_to_file` → **TOOL_ERROR**
+(`artifacts must be in ~/.gemini/antigravity-cli/brain/`, xảy ra **cả khi file nằm trong
+workspace**), rồi quay sang `run_command`:
+
+```text
+echo "hello-authorship" > probe.txt && echo "line-two" >> probe.txt
+```
+
+Hệ quả cho mọi thứ đọc "worker đã ghi file nào":
+
+- Danh sách file runtime tự khai (`touchedFiles`, event `file_change`) là sổ của **tool ghi
+  file**. File ghi bằng shell không có trong đó.
+- Nên nó xác nhận được, **không** loại trừ được: khai X thì X là của job đó; không khai gì
+  thì không suy ra được là không ghi.
+- Với Anti thì đây là **thường lệ**, không phải ngoại lệ — `write_to_file` trên máy này đang
+  từ chối mọi đường ngoài `brain/`.
+- Anti `--output-format json` không trả field nào về file. Muốn có phải đổi sang
+  `stream-json` (`step_type: "tool"` + `tool_info.parameters`), nhưng đó là viết lại toàn bộ
+  đường parse của `anti-run.mjs` kể cả phép phát hiện silent-fail — chưa làm.
+
+Bằng chứng: `tasks/260825-crew-app-mode-acceptance/data/260825-2150-probe-anti-stream-json.jsonl`.
+
 ### `result` của companion — đo 2026-08-25 (bản 1.0.5)
 
 `codex-run.mjs --mode app` giờ gọi `result <job-id>` sau khi job settle. Hình dạng thật:

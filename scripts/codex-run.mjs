@@ -143,6 +143,31 @@ function makeStreamWriter(streamPath) {
 }
 
 /**
+ * Pulls the paths codex says it wrote out of one stream line.
+ *
+ * Measured 2026-08-25 on a real headless run: the patch tool reports itself as
+ *   { type: "item.completed", item: { type: "file_change",
+ *     changes: [{ path, kind: "add" | "update" | "delete" }] } }
+ *
+ * This is an authorship signal the write-scope gate otherwise has to guess at
+ * from mtimes. It is deliberately a one-way one: a file codex names here is
+ * certainly codex's, but a file it does not name may still be codex's, because
+ * anything written by a shell command it ran never passes through the patch
+ * tool. So the list confirms; it never clears.
+ *
+ * The substring test comes first so the common case -- a long command_execution
+ * event -- is not run through JSON.parse for nothing.
+ */
+function collectFileChange(line, into) {
+  if (!line || !line.includes("file_change")) return;
+  let d;
+  try { d = JSON.parse(line); } catch { return; }
+  const changes = d?.item?.changes;
+  if (d?.item?.type !== "file_change" || !Array.isArray(changes)) return;
+  for (const c of changes) if (typeof c?.path === "string" && c.path) into.add(c.path);
+}
+
+/**
  * Where a job's raw log goes: the task's own `data/` folder, never next to the
  * evidence in `reports/`.
  *
@@ -251,6 +276,7 @@ export function codexRun(options) {
 
     let events = 0;
     let residual = "";              // a chunk can split a line; count whole lines only
+    const touched = new Set();      // paths codex says it wrote, from file_change events
     let nextHeartbeat = 25;
     let stderrTail = [];
     let killedFor = null;
@@ -338,6 +364,9 @@ export function codexRun(options) {
         endedAt,
         durationSec: Math.round((Date.parse(endedAt) - startedAt.getTime()) / 1000),
         streamEvents: events,
+        // Same field name the app transport fills from the companion, so the
+        // write-scope gate reads one name whatever the transport was.
+        touchedFiles: touched.size ? [...touched] : null,
         exitCode: code,
         signal,
         killedFor,
@@ -362,6 +391,7 @@ export function codexRun(options) {
       const parts = (residual + chunk).split("\n");
       residual = parts.pop() ?? "";
       events += parts.filter(Boolean).length;
+      for (const line of parts) collectFileChange(line, touched);
       // Only stdout re-arms the watchdog. Re-arming on stderr let a process that
       // had stopped working keep itself alive with warning chatter -- the silent
       // crashloop the skill warns about.
@@ -797,6 +827,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         exitCode: result.exitCode,
         signal: result.signal,
         streamEvents: result.streamEvents,
+        // Filled on both transports: headless reads it off the stream's
+        // file_change events, app gets it from the companion's result. It is an
+        // authorship signal for the write-scope gate, and one-way -- a file
+        // named here is this job's, a file not named here may still be.
+        touchedFiles: result.touchedFiles,
         evidenceBytes: result.evidenceBytes,
         // Recorded so the collect step can find the log without guessing its name.
         stream: result.stream,
@@ -810,10 +845,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         companionLog: result.companionLog,
         turnId: result.turnId,
         // App transport only: the companion's exit status for the codex run,
-        // the file list it says it wrote, and why the reply is missing when it
-        // is. All three are record, not verdict.
+        // and why the reply is missing when it is. Both are record, not verdict.
         companionExitStatus: result.companionExitStatus,
-        touchedFiles: result.touchedFiles,
         replyError: result.replyError,
         notes: result.runtimeVerdict
           ? [...prior, `runtime báo fail (${result.runtimeVerdict}) nhưng evidence tự phán ${result.reportedStatus} — cần người đọc`]

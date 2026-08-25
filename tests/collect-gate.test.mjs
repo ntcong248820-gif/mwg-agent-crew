@@ -670,4 +670,176 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   t.check("an app job with no thread id still WARNs", rb.rows[0].flags.includes("WARN"), "true");
 }
 
+// --- authorship: which signal accused the file, and how hard it counts -------
+{
+  // The measured shape of the problem: a runtime names the files its own patch
+  // tool wrote, and nothing else. So `authored` proves, `inferred` suspects, and
+  // both have to be charged -- a worker that writes through a shell command is
+  // invisible to the first one, and on this workspace that is the normal path.
+  const { ws, manifestPath } = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE, status: "done" }],
+  });
+  writeFile(join(ws, "shell-written.md"), "no runtime claimed this\n");
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a write with no authorship claim is still a violation", r.exitCode, 2);
+  t.check("...labelled as attributed by time", r.scope.outOfScope[0]?.source, "inferred");
+}
+
+{
+  // An authored claim beats the clock. Job 2 named the file; job 1's window is
+  // the one the mtime lands in. Charging job 1 would name the wrong worker in
+  // the one line a human reads to find the culprit.
+  const at = Date.now() - 600_000;
+  const ws = tmpWorkspace("authored-");
+  execFileSync("git", ["init", "-q"], { cwd: ws });
+  const { manifestPath } = createRun({
+    runDir: join(ws, RUN_REL), runId: "test", task: TASK, workspace: ws, depth: 0,
+  });
+  const j1 = addJob(manifestPath, {
+    worker: "codex", role: "assist", effort: "low",
+    title: "ran long", evidence: join(RUN_REL, "a1.md"),
+  });
+  const j2 = addJob(manifestPath, {
+    worker: "codex", role: "assist", effort: "low",
+    title: "named the file", evidence: join(RUN_REL, "a2.md"),
+  });
+  writeFile(join(ws, join(RUN_REL, "a1.md")), DONE);
+  writeFile(join(ws, join(RUN_REL, "a2.md")), DONE);
+  const stray = writeFile(join(ws, "claimed.md"), "job 2 says this is mine\n");
+  // Job 1 covers now; job 2 finished in the past, so the mtime is outside it.
+  updateJob(manifestPath, j1.seq, {
+    status: "done", startedAt: new Date(Date.now() - 60_000).toISOString(),
+    endedAt: new Date().toISOString(),
+  });
+  updateJob(manifestPath, j2.seq, {
+    status: "done", startedAt: new Date(at).toISOString(),
+    endedAt: new Date(at + 60_000).toISOString(),
+    touchedFiles: [stray],
+  });
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("an authored claim outranks the mtime window", r.scope.outOfScope[0]?.seqs.join(","), `${j2.seq}`);
+  t.check("...and says so", r.scope.outOfScope[0]?.source, "authored");
+  t.check("...and is still a violation", r.exitCode, 2);
+}
+
+// --- a file another run's worker claimed is that run's, not this one's -------
+{
+  // Two crew runs open at once is the ordinary case, and their job windows
+  // always overlap: MAX_PARALLEL 3 with a two-minute grace guarantees it. So
+  // cross-run ownership is decided by authorship, never by time.
+  const ws = tmpWorkspace("foreign-");
+  execFileSync("git", ["init", "-q"], { cwd: ws });
+  const mine = join("tasks", TASK, "reports", "crew-mine");
+  const theirs = join("tasks", TASK, "reports", "crew-theirs");
+  const { manifestPath } = createRun({
+    runDir: join(ws, mine), runId: "mine", task: TASK, workspace: ws, depth: 0,
+  });
+  const other = createRun({
+    runDir: join(ws, theirs), runId: "theirs", task: TASK, workspace: ws, depth: 0,
+  });
+  const stray = writeFile(join(ws, "their-file.md"), "written by the other run\n");
+  const otherJob = addJob(other.manifestPath, {
+    worker: "codex", role: "assist", effort: "low",
+    title: "other run", evidence: join(theirs, "w1.md"),
+  });
+  updateJob(other.manifestPath, otherJob.seq, { status: "done", touchedFiles: [stray] });
+
+  const j = addJob(manifestPath, {
+    worker: "codex", role: "assist", effort: "low",
+    title: "my job", evidence: join(mine, "w1.md"),
+  });
+  writeFile(join(ws, join(mine, "w1.md")), DONE);
+  updateJob(manifestPath, j.seq, {
+    status: "done", startedAt: new Date(Date.now() - 60_000).toISOString(),
+    endedAt: new Date().toISOString(),
+  });
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a file the other run claimed is not charged here", r.scope.outOfScope.length, 0);
+  t.check("...it is reported as theirs", r.scope.ownedElsewhere[0]?.path, "their-file.md");
+  t.check("...naming the run and job", r.scope.ownedElsewhere[0]?.owner, `theirs job ${otherJob.seq}`);
+  t.check("...so the run passes", r.exitCode, 0);
+}
+
+// --- dismissal: the escape hatch that leaves a trace ------------------------
+{
+  // The real case this exists for, reproduced: four byte-identical copies of one
+  // file across the four skill surfaces, mtimes seconds apart -- the signature
+  // of the skill-sync script, run by a different session while a crew job
+  // happened to be open. Run A exited 2 on exactly this on 2026-08-25.
+  const { ws, manifestPath } = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE, status: "done" }],
+  });
+  const copies = [".claude", ".codex", ".agents", ".gemini"]
+    .map((d) => writeFile(join(ws, d, "skills", "x", "script.py"), "print('same bytes')\n"));
+  const first = collectRun(manifestPath, { workspace: ws });
+  t.check("a third party's sync still fails the gate", first.exitCode, 2);
+  t.check("...all four charged", first.scope.outOfScope.length, 4);
+  t.check("...every one of them by time, not by claim",
+    first.scope.outOfScope.every((p) => p.source === "inferred"), "true");
+
+  // No reason means no dismissal: a waiver nobody has to justify is a threshold
+  // loosened in disguise.
+  let refused = "no throw";
+  try {
+    collectRun(manifestPath, { workspace: ws, notOurs: [copies[0]] });
+  } catch (err) { refused = err.message; }
+  t.check("dismissing without a reason is refused", refused.includes("--reason"), "true");
+
+  const after = collectRun(manifestPath, {
+    workspace: ws, notOurs: copies, reason: "session khác chạy sync-skill-surfaces",
+  });
+  t.check("dismissed with a reason, the run passes", after.exitCode, 0);
+  t.check("...all four moved to dismissed", after.scope.dismissed.length, 4);
+  t.check("...and the reason is on disk",
+    readManifest(manifestPath).dismissedPaths?.[0]?.reason, "session khác chạy sync-skill-surfaces");
+
+  // It sticks: the next run of the gate does not re-accuse what was explained.
+  const again = collectRun(manifestPath, { workspace: ws });
+  t.check("a recorded dismissal survives the next gate run", again.exitCode, 0);
+  t.check("...without repeating the flag", again.scope.dismissed.length, 4);
+}
+
+// --- HEAD movement: naming the blind spot instead of covering it ------------
+{
+  const { ws, manifestPath } = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE, status: "done" }],
+  });
+  // newRun's workspace has no commits, so createRun could not record a sha.
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a run with no recorded HEAD says so", r.head.known, false);
+
+  const ws2 = tmpWorkspace("head-");
+  execFileSync("git", ["init", "-q"], { cwd: ws2 });
+  execFileSync("git", ["config", "user.email", "t@t"], { cwd: ws2 });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: ws2 });
+  writeFile(join(ws2, "seed.md"), "seed\n");
+  execFileSync("git", ["add", "-A"], { cwd: ws2 });
+  execFileSync("git", ["commit", "-qm", "seed"], { cwd: ws2 });
+  const { manifestPath: mp2 } = createRun({
+    runDir: join(ws2, RUN_REL), runId: "head", task: TASK, workspace: ws2, depth: 0,
+  });
+  t.check("createRun records where HEAD was", typeof readManifest(mp2).headSha, "string");
+  const j = addJob(mp2, {
+    worker: "codex", role: "assist", effort: "low",
+    title: "j", evidence: join(RUN_REL, "w1.md"),
+  });
+  writeFile(join(ws2, join(RUN_REL, "w1.md")), DONE);
+  updateJob(mp2, j.seq, {
+    status: "done", startedAt: new Date(Date.now() - 60_000).toISOString(),
+    endedAt: new Date().toISOString(),
+  });
+  const before = collectRun(mp2, { workspace: ws2 });
+  t.check("HEAD unmoved reports zero commits", `${before.head.moved}/${before.head.commits}`, "false/0");
+
+  writeFile(join(ws2, "committed-by-someone.md"), "went in as a commit\n");
+  execFileSync("git", ["add", "-A"], { cwd: ws2 });
+  execFileSync("git", ["commit", "-qm", "during the run"], { cwd: ws2 });
+  const moved = collectRun(mp2, { workspace: ws2 });
+  t.check("HEAD moved is detected", moved.head.moved, "true");
+  t.check("...with a count", moved.head.commits, 1);
+  // It is a report line, not a verdict: a committed file is invisible to a
+  // working-tree check, and nothing here can say who authored a commit.
+  t.check("...and does not fail the run on its own", moved.exitCode, 0);
+}
+
 process.exit(t.finish() ? 0 : 1);

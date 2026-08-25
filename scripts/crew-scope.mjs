@@ -13,18 +13,37 @@
  * was editing those files in the same five minutes, and a window spanning the
  * whole run had no way to say so.
  *
+ * Where a runtime says which files it wrote, that beats the clock: a hit is
+ * labelled `authored` and charged to the job that named it, even if the mtime
+ * only lands in a different job's window.
+ *
+ * But `authored` is a one-way signal and the label must not be read as a
+ * ranking. Measured 2026-08-25: both runtimes fall back to a shell command when
+ * their file-writing tool refuses -- Antigravity's `write_to_file` errors on any
+ * path outside its own artifact directory, so its workers reach `run_command`
+ * routinely -- and nothing written that way passes through the tool that reports
+ * file changes. So a file a runtime names is certainly that job's; a file it
+ * does not name may still be. `inferred` is therefore charged exactly as hard as
+ * `authored`. Downgrading it would let every shell-written violation through.
+ *
+ * False positives are reduced without weakening that, three ways: a file another
+ * run's job authored is reported as that run's; the run records where HEAD was so
+ * the gate can say commits happened that it could not see inside; and a path can
+ * be dismissed by name with a written reason that lands in the manifest.
+ *
  * Two limits are deliberate and documented rather than papered over:
  *   - a write that was committed is invisible here, because only the working
  *     tree is read; workers are not supposed to commit, and a gate that shelled
- *     out to `git log` would still not know who authored a commit;
+ *     out to `git log` would still not know who authored a commit. `headSha`
+ *     turns that from a silent gap into a reported one;
  *   - a job that died without recording an end time has no knowable interval,
  *     so anything found in its capped window is reported as suspect rather than
  *     charged as a violation. Failing hard there made the gate unpassable on
  *     exactly the runs it exists for, which teaches a dispatcher to ignore it.
  */
 import { execFileSync } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 /** How long after a job ends a write can still plausibly be that job's. */
 export const DEFAULT_GRACE_MS = 120_000;
@@ -167,7 +186,83 @@ function watchedPaths(workspace, manifest) {
   return [...found];
 }
 
-export function collectWriteScope(manifest, { workspace, graceMs = DEFAULT_GRACE_MS } = {}) {
+/** Ceiling on how many other runs' manifests are read, so the gate stays bounded. */
+const CROSS_RUN_LIMIT = 40;
+/** Only a run that started recently can plausibly own a file in this run's window. */
+const CROSS_RUN_AGE_MS = 24 * 3600_000;
+
+/** A workspace-relative, forward-slash path, whatever shape the runtime reported. */
+function toRel(workspace, p) {
+  if (typeof p !== "string" || !p) return null;
+  const rel = isAbsolute(p) ? relative(workspace, p) : p;
+  // A path outside the workspace is not this gate's business and `relative`
+  // would return a `..` walk that matches no prefix.
+  if (!rel || rel.startsWith("..")) return null;
+  return rel.split(sep).join("/");
+}
+
+/**
+ * path -> the seqs whose runtime named it. This is the authorship index; see the
+ * file docstring for why it confirms but never clears.
+ */
+export function authoredIndex(manifest, workspace) {
+  const index = new Map();
+  for (const job of manifest.jobs) {
+    for (const p of job.touchedFiles ?? []) {
+      const rel = toRel(workspace, p);
+      if (!rel) continue;
+      if (!index.has(rel)) index.set(rel, []);
+      if (!index.get(rel).includes(job.seq)) index.get(rel).push(job.seq);
+    }
+  }
+  return index;
+}
+
+/**
+ * path -> "{runId} job {seq}" for files another crew run's worker says it wrote.
+ *
+ * Ownership across runs is decided by authorship, never by time. With
+ * MAX_PARALLEL 3 and a two-minute grace, every concurrent run's windows overlap,
+ * so a time-based cross-run check would hand half of this run's writes to
+ * whichever other run happened to be open.
+ */
+export function foreignAuthors(manifest, workspace, { now = Date.now() } = {}) {
+  const owners = new Map();
+  const here = join(workspace, "tasks");
+  let entries;
+  try {
+    entries = readdirSync(here, { recursive: true, withFileTypes: true });
+  } catch {
+    return owners;
+  }
+  let read = 0;
+  for (const e of entries) {
+    if (read >= CROSS_RUN_LIMIT) break;
+    if (!e.isFile() || e.name !== "manifest.json") continue;
+    const dir = e.parentPath ?? "";
+    if (!dir.includes(`${sep}reports${sep}crew-`) && !dir.includes("/reports/crew-")) continue;
+    const full = join(dir, e.name);
+    let other;
+    try {
+      other = JSON.parse(readFileSync(full, "utf8"));
+    } catch { continue; }
+    if (!other || other.runId === manifest.runId) continue;
+    const created = Date.parse(other.createdAt ?? "");
+    if (!Number.isFinite(created) || now - created > CROSS_RUN_AGE_MS) continue;
+    read += 1;
+    for (const job of other.jobs ?? []) {
+      for (const p of job.touchedFiles ?? []) {
+        const rel = toRel(workspace, p);
+        // First writer wins: two runs both claiming a file is itself worth
+        // seeing, and the label points at one of them either way.
+        if (rel && !owners.has(rel)) owners.set(rel, `${other.runId} job ${job.seq}`);
+      }
+    }
+  }
+  return owners;
+}
+
+export function collectWriteScope(manifest, { workspace, graceMs = DEFAULT_GRACE_MS, notOurs = [] } = {}) {
   if (!Number.isFinite(graceMs) || graceMs < 0 || graceMs > 24 * 3600_000) {
     throw new Error(`--grace không hợp lệ: ${graceMs}. Phải là số ms từ 0 đến 86400000.`);
   }
@@ -175,7 +270,11 @@ export function collectWriteScope(manifest, { workspace, graceMs = DEFAULT_GRACE
   const result = {
     intervals, inScope: [], outOfScope: [], suspect: [],
     protectedHits: [], outsideWindow: [], unattributable: [],
+    ownedElsewhere: [], dismissed: [],
   };
+  const authored = authoredIndex(manifest, workspace);
+  const foreign = foreignAuthors(manifest, workspace);
+  const waived = new Set(notOurs.map((p) => toRel(workspace, p)).filter(Boolean));
   const paths = new Set([...changedPaths(workspace), ...watchedPaths(workspace, manifest)]);
 
   for (const path of paths) {
@@ -191,17 +290,34 @@ export function collectWriteScope(manifest, { workspace, graceMs = DEFAULT_GRACE
       result.unattributable.push(path);
       continue;
     }
+    const mine = authored.get(path);
     const hits = intervals.filter((i) => mtime >= i.from && mtime <= i.to);
-    if (hits.length === 0) {
+    if (!mine && hits.length === 0) {
       result.outsideWindow.push(path);
       continue;
     }
-    const seqs = hits.map((h) => h.seq);
+
+    // A file this run's own worker named is this run's, whatever any other run
+    // says, so the foreign check comes after the authored one.
+    if (!mine && foreign.has(path)) {
+      result.ownedElsewhere.push({ path, owner: foreign.get(path) });
+      continue;
+    }
+
+    const seqs = mine ?? hits.map((h) => h.seq);
     // With MAX_PARALLEL 3 and a two-minute grace, concurrent jobs' windows
     // always overlap, so every candidate is named. Picking the first would
     // routinely accuse the wrong worker -- and that name is the line a human
-    // reads to find the culprit.
-    const entry = { path, seqs, bounded: hits.some((h) => h.bounded) };
+    // reads to find the culprit. An authored hit needs no such hedge: the
+    // runtime said which job it was.
+    const entry = {
+      path,
+      seqs,
+      source: mine ? "authored" : "inferred",
+      // An authored hit has a known writer, so the interval it happens to fall
+      // in is irrelevant to whether it can be charged.
+      bounded: mine ? true : hits.some((h) => h.bounded),
+    };
 
     if (PROTECTED_PATHS.includes(path)) {
       result.protectedHits.push(entry);
@@ -209,7 +325,16 @@ export function collectWriteScope(manifest, { workspace, graceMs = DEFAULT_GRACE
     }
     if (allowedFor(manifest, seqs).some((p) => path.startsWith(p))) {
       result.inScope.push(entry);
-    } else if (entry.bounded) {
+      continue;
+    }
+    // Dismissal is checked only for something that would otherwise be charged:
+    // waiving a path that was never a violation would hide nothing and teach the
+    // dispatcher that the flag is free.
+    if (waived.has(path)) {
+      result.dismissed.push(entry);
+      continue;
+    }
+    if (entry.bounded) {
       result.outOfScope.push(entry);
     } else {
       // Only jobs with no recorded end could have written this, so the interval
@@ -218,4 +343,34 @@ export function collectWriteScope(manifest, { workspace, graceMs = DEFAULT_GRACE
     }
   }
   return result;
+}
+
+/**
+ * Whether HEAD moved since the run was created. The gate reads the working tree
+ * only, so a committed write is invisible to it; this cannot see inside those
+ * commits either, and does not pretend to. It reports that they exist.
+ *
+ * A run from before `headSha` was recorded returns `known: false` rather than a
+ * fabricated comparison.
+ */
+export function headMovement(manifest, workspace) {
+  if (typeof manifest.headSha !== "string" || !manifest.headSha) {
+    return { known: false, moved: false, commits: null };
+  }
+  let head;
+  try {
+    head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: workspace, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return { known: false, moved: false, commits: null };
+  }
+  if (head === manifest.headSha) return { known: true, moved: false, commits: 0 };
+  let commits = null;
+  try {
+    commits = Number(execFileSync("git", ["rev-list", "--count", `${manifest.headSha}..HEAD`], {
+      cwd: workspace, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"],
+    }).trim());
+  } catch { /* the old sha may be gone; moved is still the fact */ }
+  return { known: true, moved: true, commits: Number.isFinite(commits) ? commits : null };
 }

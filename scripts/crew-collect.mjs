@@ -16,10 +16,10 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { readManifest, updateJob, appendNote } from "./crew-manifest.mjs";
+import { readManifest, updateJob, updateManifest, appendNote } from "./crew-manifest.mjs";
 import { readWorkerStatus } from "./crew-guards.mjs";
 import { reconcileRun, resolveEvidence } from "./crew-reconcile.mjs";
-import { collectWriteScope } from "./crew-scope.mjs";
+import { collectWriteScope, headMovement } from "./crew-scope.mjs";
 
 /**
  * How long past a job's own timeout it may stay silent before the gate calls it
@@ -192,17 +192,23 @@ function costGateReason(job, workspace) {
   return hit ? (hit[1].trim() || "không nêu tên API") : null;
 }
 
-export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, now = Date.now() } = {}) {
+export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, now = Date.now(), notOurs = [], reason = null } = {}) {
   const abs = resolve(manifestPath);
   // Reconcile first: evidence on disk outranks the manifest, and a gate that
   // judged a stale manifest would fail jobs that had already finished.
   const reconciled = reconcileRun(abs, { dryRun });
+  if (notOurs.length && !dryRun) recordDismissals(abs, notOurs, reason);
   const manifest = readManifest(abs);
   const ws = workspace ?? manifest.workspace;
 
   const rows = manifest.jobs.map((job) => judgeOne(job, ws, now, manifest.version));
   const dupes = duplicateEvidence(manifest);
-  const scope = collectWriteScope(manifest, { workspace: ws, graceMs });
+  // Dismissals carried over from earlier invocations too: a path someone already
+  // explained, with the explanation on the record, does not need re-explaining
+  // every time the gate runs.
+  const waived = [...notOurs, ...(manifest.dismissedPaths ?? []).map((d) => d.path)];
+  const scope = collectWriteScope(manifest, { workspace: ws, graceMs, notOurs: waived });
+  const head = headMovement(manifest, ws);
   const costGates = manifest.jobs
     .filter((j) => rows.find((r) => r.seq === j.seq)?.verdict === "BLOCKED")
     .map((j) => ({ seq: j.seq, api: costGateReason(j, ws) }))
@@ -216,7 +222,33 @@ export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, n
   const exitCode = violation && blocking ? 3 : violation ? 2 : blocking ? 1 : 0;
   const unchecked = rows.length > 0 && scope.intervals.length === 0;
 
-  return { runId: manifest.runId, task: manifest.task, dryRun, reconciled, rows, dupes, scope, costGates, unchecked, exitCode };
+  return { runId: manifest.runId, task: manifest.task, dryRun, reconciled, rows, dupes, scope, costGates, unchecked, head, exitCode };
+}
+
+/**
+ * Writes a dismissal into the manifest before the scope check reads it.
+ *
+ * The reason is mandatory and lands on disk on purpose. Loosening a threshold to
+ * silence a false positive silences it for every run afterwards, with nothing
+ * recorded; this silences one path in one run and leaves the sentence that
+ * justified it next to the run it applied to.
+ */
+function recordDismissals(abs, paths, reason) {
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error(
+      "--not-ours cần --reason \"<vì sao file này không phải của run>\"\n" +
+      "  → bỏ qua một vi phạm mà không ghi lý do thì lần sau không ai truy được",
+    );
+  }
+  const at = new Date().toISOString();
+  updateManifest(abs, (m) => {
+    const existing = m.dismissedPaths ?? [];
+    const fresh = paths
+      .filter((p) => !existing.some((d) => d.path === p))
+      .map((path) => ({ path, reason: reason.trim(), at }));
+    m.dismissedPaths = [...existing, ...fresh];
+    return m;
+  });
 }
 
 /**
@@ -244,6 +276,14 @@ export function abandonJob(manifestPath, seq, { now = Date.now() } = {}) {
   return appendNote(abs, seq, "collect: bỏ job vì pending quá lâu và không có evidence");
 }
 
+/** Where the accusation came from -- the line a human reads to decide whether to argue. */
+function why(entry) {
+  const who = `job ${entry.seqs.join("/")}`;
+  return entry.source === "authored"
+    ? `${who} tự khai đã ghi`
+    : `theo thời gian: khớp khoảng ${who} chạy`;
+}
+
 function report(r) {
   console.log(`run ${r.runId} — task ${r.task}`);
   for (const p of r.reconciled.patched) console.log(`  reconcile: job ${p.seq} ${p.from} → ${p.to} theo evidence`);
@@ -263,12 +303,25 @@ function report(r) {
 
   if (r.scope.protectedHits.length) {
     console.log("\nGHI VÀO FILE ĐƯỢC BẢO VỆ — không worker nào được phép:");
-    for (const h of r.scope.protectedHits) console.log(`  ${h.path} (lúc job ${h.seqs.join("/")} chạy)`);
+    for (const h of r.scope.protectedHits) console.log(`  ${h.path} — ${why(h)}`);
   }
   if (r.scope.outOfScope.length) {
     console.log("\nSCOPE_VIOLATION — file bị ghi ngoài phạm vi run:");
-    for (const p of r.scope.outOfScope) console.log(`  ${p.path} (lúc job ${p.seqs.join("/")} chạy)`);
+    for (const p of r.scope.outOfScope) console.log(`  ${p.path} — ${why(p)}`);
     console.log("  Nếu đây là chỗ ghi hợp lệ, khai `filesMayModify` cho job lúc addJob thay vì bỏ qua cảnh báo.");
+    if (r.scope.outOfScope.some((p) => p.source === "inferred")) {
+      console.log("  Dòng `theo thời gian` là suy đoán từ mtime, không phải runtime tự khai — nhưng vẫn tính,");
+      console.log("  vì worker ghi file bằng shell thì runtime không khai gì cả. Của session khác thì bác bằng:");
+      console.log("    --not-ours <path> --reason \"<vì sao>\"");
+    }
+  }
+  if (r.scope.ownedElsewhere.length) {
+    console.log("\nCỦA RUN KHÁC (không tính vào run này) — worker của run đó tự khai đã ghi:");
+    for (const p of r.scope.ownedElsewhere) console.log(`  ${p.path} → ${p.owner}`);
+  }
+  if (r.scope.dismissed.length) {
+    console.log("\nĐÃ BÁC BỎ CÓ LÝ DO (không tính) — lý do nằm trong manifest:");
+    for (const p of r.scope.dismissed) console.log(`  ${p.path} — ${why(p)}`);
   }
   if (r.scope.suspect.length) {
     console.log("\nNGHI VẤN PHẠM VI (không chặn) — job không ghi được giờ kết thúc nên khoảng thời gian chỉ là suy đoán:");
@@ -279,6 +332,12 @@ function report(r) {
   }
   console.log(`\nphạm vi ghi: ${r.scope.inScope.length} file trong phạm vi, ${r.scope.outsideWindow.length} file thay đổi ngoài khoảng job chạy (không tính)`);
   console.log("  Lưu ý: chỉ đọc working tree — file đã commit thì không thấy.");
+  if (!r.head.known) {
+    console.log("  HEAD lúc tạo run không được ghi (run cũ), nên không biết có commit nào trong lúc chạy.");
+  } else if (r.head.moved) {
+    const n = r.head.commits === null ? "một số" : r.head.commits;
+    console.log(`  HEAD đã dịch ${n} commit từ lúc tạo run — gate KHÔNG soi được nội dung các commit đó.`);
+  }
   if (r.unchecked) console.log("  CHƯA KIỂM ĐƯỢC: không job nào có startedAt, nên không quy được file nào cho run này.");
 
   if (r.costGates.length) {
@@ -305,14 +364,18 @@ function report(r) {
 
 /** Flags with a value, so a manifest path is never read out of one. */
 function parseArgs(argv) {
-  const withValue = new Set(["--abandon", "--grace"]);
-  const opts = { flags: new Set(), values: new Map(), positional: [] };
+  const withValue = new Set(["--abandon", "--grace", "--reason"]);
+  // Repeatable, because dismissing four files from one stray sync should be one
+  // command with one reason, not four runs of the gate.
+  const repeatable = new Set(["--not-ours"]);
+  const opts = { flags: new Set(), values: new Map(), lists: new Map(), positional: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (withValue.has(a)) {
+    if (withValue.has(a) || repeatable.has(a)) {
       const v = argv[i + 1];
       if (v === undefined || v.startsWith("--")) throw new Error(`${a} thiếu giá trị`);
-      opts.values.set(a, v);
+      if (repeatable.has(a)) opts.lists.set(a, [...(opts.lists.get(a) ?? []), v]);
+      else opts.values.set(a, v);
       i += 1;
     } else if (a.startsWith("--")) opts.flags.add(a);
     else opts.positional.push(a);
@@ -327,6 +390,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!manifestPath || opts.positional.length > 1) {
       console.error(
         "usage: crew-collect.mjs <manifest.json> [--abandon <seq>] [--grace <ms>] [--dry-run]\n" +
+        "                            [--not-ours <path>]... --reason \"<vì sao>\"\n" +
         "exit: 0 = được report | 1 = còn job chưa xong | 2 = vi phạm phạm vi ghi | 3 = cả 1 và 2",
       );
       process.exit(2);
@@ -343,7 +407,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       graceMs = Number(opts.values.get("--grace"));
       if (!Number.isFinite(graceMs) || graceMs < 0) throw new Error(`--grace cần số ms ≥ 0, nhận "${opts.values.get("--grace")}"`);
     }
-    const r = collectRun(manifestPath, { graceMs, dryRun });
+    const notOurs = opts.lists.get("--not-ours") ?? [];
+    const r = collectRun(manifestPath, {
+      graceMs, dryRun, notOurs, reason: opts.values.get("--reason") ?? null,
+    });
     report(r);
     process.exit(r.exitCode);
   } catch (err) {

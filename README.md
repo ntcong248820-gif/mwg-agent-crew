@@ -53,7 +53,7 @@ chỉ trỏ vào.
 | `scripts/crew-manifest.mjs` | State chung của 1 run. Ghi atomic (tmp+rename) dưới lock có owner token nên nhiều job kết thúc cùng lúc không mất update. |
 | `scripts/crew-reconcile.mjs` | Vá manifest từ evidence trên đĩa khi runtime chết hoặc bỏ cuộc trước lúc ghi sổ. Idempotent. Không ghi đè phán quyết đã đậu. |
 | `scripts/crew-collect.mjs` | Cổng nghiệm thu cuối run: reconcile → phán từng job → kiểm trùng `evidence_path` → kiểm phạm vi ghi → in bảng verdict. Exit 0 mới được viết report tổng. |
-| `scripts/crew-scope.mjs` | Quy file thay đổi trong working tree về từng job theo mtime nằm trong khoảng job đó chạy. Tách khỏi collect vì đây là logic quy trách nhiệm, không phải logic phán quyết. |
+| `scripts/crew-scope.mjs` | Quy file thay đổi trong working tree về từng job: ưu tiên `touchedFiles` runtime tự khai, còn lại theo mtime nằm trong khoảng job đó chạy. Tách khỏi collect vì đây là logic quy trách nhiệm, không phải logic phán quyết. |
 
 ```bash
 node mwg-agent-crew/scripts/codex-run.mjs \
@@ -109,7 +109,7 @@ Và không bao giờ rơi ngầm sang transport khác. Không tìm được comp
 không phải lý do để chạy headless: manifest sẽ ghi `app`, không thread nào mở, và không
 ai biết bên nào nói dối.
 
-### Phạm vi ghi đo bằng thời gian, không bằng diff
+### Phạm vi ghi: runtime tự khai trước, thời gian sau
 
 `git status` một mình không dùng được ở workspace này: repo thường xuyên mang sẵn
 hàng trăm file đang sửa dở của user, nên diff thuần sẽ tố cả những file run không
@@ -140,11 +140,35 @@ gitignore ở repo này — tức là chỗ ghi hợp lệ mà tài liệu vẫn
 lấy từ Protected Files của `CLAUDE.md`. Ghi vào file được bảo vệ là exit 2, không
 có đường khai để hợp lệ hoá.
 
+**Runtime tự khai thì thắng đồng hồ — nhưng chỉ theo một chiều.** Job nào có
+`touchedFiles` (Codex headless đọc từ event `file_change`, Codex app từ `result` của
+companion) thì file trong đó được quy cho **chính job đó**, kể cả khi mtime chỉ rơi vào
+khoảng của job khác. Report gắn nhãn `tự khai đã ghi` hay `theo thời gian` cho từng dòng.
+
+Nhãn **không** phải thứ bậc, và `theo thời gian` bị tính **y như** `tự khai`. Đo
+2026-08-25: cả hai runtime đều quay sang shell khi tool ghi file lỗi — `write_to_file` của
+Antigravity từ chối mọi đường ngoài thư mục artifact của nó, nên worker Anti dùng
+`run_command` như thường lệ — và không gì ghi bằng shell đi qua cái tool báo file thay đổi.
+Nên file runtime khai thì chắc chắn là của nó; file nó không khai thì **vẫn có thể** là của
+nó. Hạ `theo thời gian` xuống cảnh báo là mở cửa cho mọi vi phạm ghi-bằng-shell.
+
+**Giảm báo oan mà không nới cưỡng chế**, ba đường:
+
+| Đường | Làm gì |
+| --- | --- |
+| Run khác sở hữu | File mà worker của một run crew khác tự khai đã ghi thì báo là của run đó, không tính vào run này. Quyết bằng **authorship**, không bằng thời gian — `MAX_PARALLEL` 3 với grace 2 phút thì cửa sổ run nào cũng chồng nhau |
+| `headSha` | `createRun` ghi HEAD lúc bắt đầu; collect so lại và nêu số commit đã vào trong lúc run, kèm câu nói rõ gate **không** soi được nội dung chúng |
+| `--not-ours <path> --reason "<vì sao>"` | Bác một path cụ thể. `--reason` là bắt buộc, lý do ghi vào `manifest.dismissedPaths` và in trong report; lần chạy sau không tố lại |
+
+Bác bỏ có dấu khác hẳn nới ngưỡng: nới ngưỡng làm im mọi run về sau và không để lại gì,
+còn cái này làm im **một path trong một run** kèm câu giải thích nằm cạnh run đó.
+
 Giới hạn còn lại, cố ý không vá: **file đã commit thì gate không thấy** — nó chỉ đọc
-working tree. Worker không được commit, và có gọi `git log` thì cũng không biết ai
-là tác giả thật của commit. File bị xoá cũng không quy được cho job nào (xoá thì
-không còn mtime) nên chỉ được nêu ra, không chặn — repo này đang mang sẵn một file
-xoá không liên quan, gate mà fail vì nó thì hôm sau không ai chạy nữa.
+working tree. `headSha` không vá chỗ đó, nó chỉ khiến gate **nói ra** là có commit mà nó
+không soi được; có gọi `git log` thì cũng không biết ai là tác giả thật của commit. File bị
+xoá cũng không quy được cho job nào (xoá thì không còn mtime) nên chỉ được nêu ra, không
+chặn — repo này đang mang sẵn một file xoá không liên quan, gate mà fail vì nó thì hôm sau
+không ai chạy nữa.
 
 File ghi hợp lệ ra ngoài `tasks/{task}/` phải khai `filesMayModify` lúc `addJob`
 (ví dụ `mwg-content-editor/content-workspaces/{slug}/`). Prefix được chuẩn hoá kết

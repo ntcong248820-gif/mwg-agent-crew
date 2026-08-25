@@ -11,6 +11,7 @@ import {
   mkdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, rmSync,
   existsSync, statSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
@@ -191,9 +192,27 @@ export function createRun({ runDir, runId, task, workspace, depth = 0, dispatche
       depth,
       createdAt: now,
       updatedAt: now,
+      // Where HEAD was when the run started. The write-scope gate reads only
+      // the working tree, so a file a worker committed is invisible to it. This
+      // does not make it visible -- nothing here can say who authored a commit
+      // -- it lets the gate say out loud that commits happened during the run
+      // and that it could not see inside them. Naming the blind spot is worth
+      // more than a check that quietly does not cover it.
+      headSha: headSha(workspace),
       jobs: [],
     }) && readManifest(manifestPath),
   };
+}
+
+/** HEAD, or null outside a repo. A run must not fail because git is unavailable. */
+function headSha(workspace) {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: workspace, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
