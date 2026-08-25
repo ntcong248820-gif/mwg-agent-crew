@@ -24,7 +24,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  brokerStatePath, readBrokerFile, countAppServers, probeCompanionJob,
+  brokerStatePath, readBrokerFile, countAppServers, probeCompanionJob, probeRuntime,
 } from "../scripts/crew-runtime-probe.mjs";
 import { createRun, addJob, updateJob, readManifest, recordRuntime } from "../scripts/crew-manifest.mjs";
 import { reconcileRun, classifyOrphan } from "../scripts/crew-reconcile.mjs";
@@ -118,6 +118,36 @@ function fakeBroker(workspace, body) {
 
   const none = countAppServers({ psOutput: "    1     0 /sbin/launchd", brokerPid: 65720 });
   t.check("an idle machine counts zero", `${none.servers}/${none.foreign}`, "0/0");
+
+  // `app-server` must END the token. A broker child whose name merely starts
+  // with it is not an app-server, and it sits under the broker, so a loose
+  // boundary would count it as ours -- inflating the number that is supposed
+  // to be run evidence. The broker itself is one instance of this family.
+  const helper = [
+    "65720     1 node /Users/x/.claude/plugins/.../app-server-broker.mjs serve",
+    "65740 65720 node /tmp/codex-app-server-healthcheck --once",
+  ].join("\n");
+  const h = countAppServers({ psOutput: helper, brokerPid: 65720 });
+  t.check("an app-server-* helper is not an app-server", `${h.servers}/${h.foreign}/${h.processes}`, "0/0/0");
+}
+
+// --- the never-throws contract at the input boundary -----------------------
+{
+  // A CLI typo (`--workspace` with no value) used to reach resolve()/spawnSync()
+  // as undefined and throw a TypeError, killing the probe before any `errors`
+  // array could carry the fault. Reporting is the job; dying is not.
+  let threw = null;
+  let r = null;
+  try { r = readBrokerFile(undefined); } catch (err) { threw = String(err); }
+  t.check("a missing workspace does not throw", threw, null);
+  t.check("...and reads as absent", r?.present, false);
+
+  threw = null;
+  let p2 = null;
+  try { p2 = probeRuntime({ skipCompanion: true }); } catch (err) { threw = String(err); }
+  t.check("probeRuntime with no workspace does not throw", threw, null);
+  t.check("...and says why in errors", /workspace không hợp lệ/.test((p2?.errors ?? []).join(" ")), true);
+  t.check("...and still returns a reading", typeof p2?.mode, "string");
 }
 
 // --- storing the reading ---------------------------------------------------
@@ -166,6 +196,26 @@ function fakeBroker(workspace, body) {
   t.check("an answer carrying an error is not acted on",
     kind({ known: true, status: "running", pid: null, alive: null, error: "companion result exit 2" }), "waiting");
   t.check("no probe at all → still waiting", kind(null), "waiting");
+
+  // Measured 25/08 during the concurrent-dispatch race: a companion answer came
+  // back with no `status` field while its job was still working. Reading that
+  // silence as "settled" would fail a live job -- the worst outcome this
+  // function can produce -- so an unrecognised status may never reach a verdict.
+  t.check("no status but a live pid → still waiting",
+    kind({ known: true, status: null, pid: 123, alive: true, error: null }), "waiting");
+  t.check("no status and no pid → still waiting",
+    kind({ known: true, status: null, pid: null, alive: null, error: null }), "waiting");
+  // A status word this code has never seen is not a settlement either. A future
+  // companion adding `starting` must not be read as "finished without evidence".
+  t.check("an unfamiliar status → still waiting",
+    kind({ known: true, status: "starting", pid: null, alive: null, error: null }), "waiting");
+  t.check("an unfamiliar status with a dead pid → still waiting",
+    kind({ known: true, status: "starting", pid: 123, alive: false, error: null }), "waiting");
+  // The live-pid guard outranks the settled branch too, not only the active one.
+  t.check("completed but the process is still alive → still waiting",
+    kind({ known: true, status: "completed", pid: 123, alive: true, error: null }), "waiting");
+  t.check("cancelled with nothing on disk → orphan",
+    kind({ known: true, status: "cancelled", pid: null, alive: null, error: null }), "settled_without_evidence");
 }
 
 // --- reconcile acting on it ------------------------------------------------

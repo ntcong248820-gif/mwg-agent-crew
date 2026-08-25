@@ -80,8 +80,13 @@ function pidAlive(pid) {
  * `shared` for a runtime that is gone.
  */
 export function readBrokerFile(workspace, { home = homedir() } = {}) {
-  const path = brokerStatePath(workspace, home);
+  // Inside the try, not before it. `brokerStatePath` calls `resolve()`, which
+  // throws a TypeError on a missing workspace -- and a throw here escapes the
+  // whole never-throws contract before any `errors` array can carry it. A CLI
+  // typo (`--workspace` with no value) was enough to reach it.
+  let path = null;
   try {
+    path = brokerStatePath(workspace, home);
     const raw = JSON.parse(readFileSync(path, "utf8"));
     const pid = Number.isInteger(raw?.pid) ? raw.pid : null;
     return {
@@ -160,8 +165,11 @@ export function countAppServers({ psOutput = null, brokerPid = null } = {}) {
     // `grep` itself matches the pattern it is searching for; so does this
     // probe's own command line when invoked with an --arg naming the runtime.
     if (cmd.includes("grep")) continue;
-    if (!/\bapp-server\b/.test(cmd)) continue;
-    if (cmd.includes("app-server-broker")) continue;
+    // `app-server` has to END the token. `\b` alone also matches the first
+    // half of `app-server-broker` and of any future `app-server-*` helper,
+    // which would count a process that is not an app-server at all. The broker
+    // is the instance this was measured on; the rule covers the whole family.
+    if (!/\bapp-server(?![\w-])/.test(cmd)) continue;
     if (!/codex/.test(cmd)) continue;
     rows.push({ pid, ppid });
   }
@@ -193,6 +201,17 @@ export function countAppServers({ psOutput = null, brokerPid = null } = {}) {
 
 /** Companion job states that mean the work has not stopped yet. */
 export const COMPANION_ACTIVE = new Set(["queued", "running"]);
+
+/**
+ * Companion job states that mean the work has genuinely stopped.
+ *
+ * An allowlist, not the complement of COMPANION_ACTIVE, and that is the whole
+ * point: only a word measured to mean "finished" may justify failing a job.
+ * The vocabulary measured against companion 1.0.5 is queued / running /
+ * completed / failed / cancelled, so anything outside both sets is a word this
+ * code has never seen -- read as "wait", never as "settled".
+ */
+export const COMPANION_TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
 /**
  * Ask the companion what became of one job it was given.
@@ -298,7 +317,18 @@ function askCompanion(workspace) {
 export function probeRuntime({ workspace, home = homedir(), skipCompanion = false } = {}) {
   const at = new Date().toISOString();
   const errors = [];
-  const broker = readBrokerFile(workspace, { home });
+
+  // One place to make the never-throws contract true at the input boundary. A
+  // missing workspace used to reach `resolve()` and `spawnSync()` as undefined,
+  // both of which throw a TypeError -- so the probe died instead of reporting.
+  // Falling back to cwd keeps the reading available and says so out loud.
+  let ws = workspace;
+  if (typeof ws !== "string" || ws.length === 0) {
+    ws = process.cwd();
+    errors.push(`workspace không hợp lệ, đọc theo cwd: ${ws}`);
+  }
+
+  const broker = readBrokerFile(ws, { home });
   if (broker.error) errors.push(broker.error);
 
   // Attribution needs the broker pid, so the broker file is read first even
@@ -311,7 +341,7 @@ export function probeRuntime({ workspace, home = homedir(), skipCompanion = fals
   let label = null;
 
   if (!skipCompanion) {
-    const asked = askCompanion(workspace);
+    const asked = askCompanion(ws);
     if (asked.error) errors.push(asked.error);
     if (asked.mode) { mode = asked.mode; source = "companion"; label = asked.label; }
   }

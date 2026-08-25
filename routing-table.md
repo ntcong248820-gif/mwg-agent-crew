@@ -305,10 +305,17 @@ Bảng phán quyết, cho job còn ở trạng thái sổ sách và không có e
 | `result <id>` trả về | kết luận |
 | --- | --- |
 | exit ≠ 0, `No job found` | orphan `unknown_to_runtime` |
-| `queued`/`running` + pid **còn sống** | vẫn chờ, **không** động vào |
+| pid **còn sống**, bất kể status là gì | vẫn chờ, **không** động vào |
 | `queued`/`running` + pid chết hoặc không có | orphan `active_without_process` |
-| `completed`/`failed`/`cancelled` | orphan `settled_without_evidence` |
+| `completed`/`failed`/`cancelled` + không pid | orphan `settled_without_evidence` |
+| status **rỗng hoặc lạ** (vd `starting`) | vẫn chờ — chưa nhận ra thì chưa được kết |
 | probe lỗi, không trả lời được | vẫn chờ — im lặng không phải là chết |
+
+Hai dòng cuối là **sửa ngày 25/08**, sau khi worker Codex rà lại hàm này. Bảng cũ coi mọi
+status ngoài `queued`/`running` là đã kết thúc, kể cả khi payload **không có** field `status`.
+Đó không phải giả thuyết: đúng cái payload thiếu `status` này đã đo được trong ca đua dispatch
+đêm 25/08. Hậu quả là giết một job đang sống — hậu quả nặng nhất hàm này có thể gây ra. Giờ
+chỉ ba từ trong allowlist `COMPANION_TERMINAL` mới được quyền kết, và pid sống thắng mọi status.
 
 Ba phép đo làm bảng này an toàn:
 

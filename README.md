@@ -40,6 +40,20 @@ chỉ trỏ vào.
 | Env xuyên xuống tool con của `agy` | **Có** — `MWG_CREW_ROLE=worker` tới được shell của agent |
 | Codex + Anti đồng thời | **OK** — 1 Codex + 3 Anti, không ai fail |
 
+### `MWG_CREW_ROLE` là tín hiệu, `depth` là chốt
+
+Đo 25/08: cả hai worker Codex đều không chạy được bộ test của module, vì
+`createRun` từ chối tạo run depth 0 khi `MWG_CREW_ROLE=worker`. Một worker đã lách
+bằng `env -u MWG_CREW_ROLE node ...` — và **khai ra trong evidence**.
+
+Không nới chốt đó. Nhưng phải nói thẳng ranh giới thật: env var là **tín hiệu** cho
+một agent chịu hợp tác, không phải hàng rào — agent nào cũng unset được nó. Chốt
+thật là `depth` trong manifest: `depth > 1` bị từ chối, và cái đó nằm trên đĩa, worker
+không sửa được bằng env.
+
+Nên brief nào cần chạy test module thì nói rõ dùng `env -u MWG_CREW_ROLE` cho **đúng
+lệnh test**, thay vì để worker tự đoán rằng nó được phép lách.
+
 ## Scripts
 
 | Script | Việc |
@@ -192,6 +206,22 @@ thúc bằng `/` và chỉ áp cho **chính job đã khai** — khai `docs` khô
 3 không phải bậc nặng hơn 2. Trước đó hai loại vấn đề gộp vào một mã, nên người
 vừa dọn xong đống file ngoài phạm vi thấy gate hết đỏ và tưởng run đã sạch —
 trong khi vẫn còn job chưa ai xử.
+
+### Report tổng: ba chốt, và cái mà `existsSync` không thấy
+
+`--report` chỉ ghi khi gate trả exit 0, không đi cùng `--dry-run`, và đường dẫn phải
+nằm **trực tiếp** trong `tasks/{task}/reports/`. Ba chốt đó là chốt cũ. Ngày 25/08 một
+worker Codex rà lại và tìm thêm hai đường lách, cả hai đã bịt:
+
+| Đường lách | Vì sao chốt cũ không thấy | Bịt bằng |
+| --- | --- | --- |
+| `tasks/{task}/reports/` **là symlink** trỏ ra ngoài | `relative()` so chuỗi, không đọc đĩa. Và `realpath` của chính nó so với chính nó thì luôn khớp | Neo ở thư mục **task**: `realpath(tasks/{task})` + `/reports` — đường mà symlink không can thiệp được |
+| File đích là **symlink treo** | `existsSync` đi theo link, thấy đích không có, trả "trống" | Ghi bằng `flag: "wx"` — kernel nhìn chính cái link, trả `EEXIST` |
+
+`wx` cũng đóng luôn ca hai tiến trình cùng ghi một tên: cả hai đều qua được
+`existsSync`, nhưng chỉ một tạo được file. Bằng chứng run cũ không bị thay lặng lẽ.
+
+Còn `existsSync` để làm gì: để có câu báo lỗi tử tế. Cái bảo đảm là `wx`.
 
 ### Job im lặng bao lâu thì coi là chết
 

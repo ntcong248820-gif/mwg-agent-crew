@@ -22,7 +22,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readManifest, updateJob, appendNote } from "./crew-manifest.mjs";
 import { readWorkerStatus } from "./crew-guards.mjs";
-import { probeCompanionJob, COMPANION_ACTIVE } from "./crew-runtime-probe.mjs";
+import { probeCompanionJob, COMPANION_ACTIVE, COMPANION_TERMINAL } from "./crew-runtime-probe.mjs";
 import { resolveCompanion } from "./codex-companion-path.mjs";
 
 /**
@@ -84,12 +84,16 @@ export function classifyOrphan(job, probe) {
   }
   if (probe.known !== true) return null;
 
+  // A live process outranks every status reading. This is the measurement the
+  // whole rule rests on -- a running job carries a real pid, a finished one
+  // carries none -- so whatever word the runtime uses, a live pid means the
+  // work is still going. Checked before the status branches on purpose: an
+  // unfamiliar status on a live process must not be able to reach a verdict.
+  if (probe.alive === true) return null;
+
   if (COMPANION_ACTIVE.has(probe.status)) {
-    // A live pid means the work is genuinely still going: leave it. This is the
-    // measurement the rule rests on -- a running job carries a real pid, a
-    // finished one carries none -- so a missing pid on an "active" job means the
-    // runtime is tracking something that no longer exists.
-    if (probe.alive === true) return null;
+    // Missing pid on an "active" job: the runtime is tracking something that
+    // no longer exists.
     if (probe.alive === null && probe.pid === null) {
       return { kind: "active_without_process", why: `runtime báo ${probe.status} nhưng không có tiến trình nào` };
     }
@@ -98,6 +102,13 @@ export function classifyOrphan(job, probe) {
     }
     return null;
   }
+
+  // A status this code does not recognise as finished is not a settlement.
+  // Measured 25/08: a companion answer came back with no `status` field at all
+  // while its job was still working -- and the old code read that silence as
+  // settled, which would fail a live job. Only a word on the terminal
+  // allowlist may justify that verdict.
+  if (!COMPANION_TERMINAL.has(probe.status)) return null;
 
   // Settled, and nothing on disk. Note this is not read as a pass even when the
   // runtime says `completed`: a run that finished without writing its evidence
