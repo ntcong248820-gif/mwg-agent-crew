@@ -30,7 +30,7 @@ việc `seo-gsc-rank-check` có thể là owner hay assist tuỳ ai chịu trác
 
 | Vai trò | Nghĩa là | Transport |
 | --- | --- | --- |
-| **owner** | Worker là người đảm nhiệm chính. Evidence của nó **chính là** deliverable được nghiệm thu | **app** — mở box chat để owner kiểm soát bằng mắt |
+| **owner** | Worker là người đảm nhiệm chính. Evidence của nó **chính là** deliverable được nghiệm thu | **app** — Anti thì mở box chat xem được; Codex thì chỉ được thread resume được, xem mục dưới |
 | **assist** | Worker làm nguyên liệu cho deliverable mà Claude mới là người viết (Anti chạy browser lấy trang, Codex research song song nhiều nhánh) | **headless** |
 
 Phép thử duy nhất:
@@ -57,7 +57,7 @@ ghi transport vào đó là ghi một box chat chưa từng mở.
 | Transport | Cơ chế | Có stdout? |
 | --- | --- | --- |
 | `headless` | Anti: `agy -p --output-format json`. Codex: `codex exec` | **Có** — trả về Claude |
-| `app` | Anti: `agentapi new-conversation` → session hiện trong Antigravity 2.0, adapter poll bằng file evidence. Codex: `codex-run.mjs --mode app` → companion `task --background` → thread thật trong app, chờ bằng `status --wait` | Anti **không**; Codex **có** (`result <job-id>`) |
+| `app` | Anti: `agentapi new-conversation` → session **hiện trong Antigravity 2.0**, xem được bằng mắt (owner xác nhận 25/08); adapter poll bằng file evidence. Codex: `codex-run.mjs --mode app` → companion `task --background` → thread CLI thật, resume được, **không hiện trong app desktop nào**; chờ bằng `status --wait` | Anti **không**; Codex **có** (`result <job-id>`) |
 
 Hai runtime lệch nhau chỗ stdout — đừng suy từ Anti sang Codex. Cả hai đều lấy **file
 evidence** làm phán quyết, stdout chỉ là tiện.
@@ -76,6 +76,18 @@ Hệ quả khi dùng app mode:
 - Job app từng dừng hẳn sau 1 tool call mà không ghi gì (conversation 6 step, không có
   error, không có permission blob). Evidence gate bắt được. Đừng giao việc bắt buộc phải
   ra file cho app mode nếu không ai ngồi xem.
+
+### Ba job app song song — đo 2026-08-25
+
+3 job app cùng lúc (2 Codex `--effort low` + 1 Anti `flash`): 3/3 xong, **0 job mất,
+0 job fail**, cổng nghiệm thu exit 0. Tổng 132 giây so với 228 giây khi chạy tuần tự 2
+job — song song ăn được thật.
+
+Nhưng số app-server đi từ 1 lên **2**: một job Codex dùng app-server con của broker
+(ppid = pid broker), job kia có process companion **detached** (ppid 1) tự spawn
+app-server riêng. Đường phân nhánh ở `codex.mjs:623-637` có thật. `broker.log` rỗng nên
+chưa biết cơ chế là `BROKER_BUSY` fallback hay mỗi background job vốn tự mở runtime.
+App-server riêng tự dọn khi job xong. Chưa đo 3 job Codex cùng lúc.
 
 ### Codex app transport — đo 2026-08-25
 
@@ -98,9 +110,19 @@ Ba chỗ đã đo và **không** suy diễn được:
 
 - Thread luôn tên `"Codex Task"`, không có cờ đặt tên. Cái phân biệt là `summary` =
   dòng đầu brief. Nên dòng đầu brief phải là title job.
-- `sessionRuntime.mode` trong `status --json` cho biết đang dùng broker chia sẻ
-  (`shared`) hay kết nối riêng (`direct`). Đo trên máy này: `direct`, chưa có broker nào
-  chạy — nên tình huống `BROKER_BUSY` chưa xảy ra ở đường crew.
+- **Thread KHÔNG hiện trong app desktop nào.** Companion `spawn("codex", ["app-server"])`
+  (`app-server.mjs:190`); broker cũng vậy (`app-server-broker.mjs:68`, `disableBroker: true`).
+  App desktop là `ChatGPT.app`/`CodexBar.app` — runtime khác, và `lsof` cho thấy không
+  process app nào mở `~/.codex/sessions`. Thread có thật, lưu ở
+  `~/.codex/sessions/.../rollout-*.jsonl`, quan sát bằng `codex resume <id>` hoặc
+  `status`/`result`/log file. Nên với Codex, `app` mua được **thread resume được**, không
+  mua được **cái để ngồi xem**. Đo 25/08, phase 3.
+- `sessionRuntime` **không** có ở `status <job-id>` (trả `null`). Nó chỉ có ở lệnh
+  `setup` (`codex-companion.mjs:208`), nên adapter không ghi được transport mode từ đó.
+  Tự tính thay: `broker.json` có `endpoint` → `shared` (`codex.mjs:906-922`).
+- **Broker được dựng bởi chính lệnh dispatch**, không phải có sẵn hay không. Đo 25/08:
+  trước job nào thì `direct`; sau job đầu thì broker sống và mọi job sau là `shared`.
+  Đừng đo trạng thái broker khi chưa chạy job rồi kết luận máy không có broker.
 - `--write` là **bắt buộc**, không theo `role`: mọi job crew đều phải tự ghi file
   evidence, nên app mode read-only thì không job nào qua được cổng evidence.
 
