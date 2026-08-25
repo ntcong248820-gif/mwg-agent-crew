@@ -16,6 +16,11 @@
  *
  * Driven by env so the adapter's own argv stays untouched:
  *   FAKE_COMPANION_MODE     ok | failed | timeout | no_job_id | not_json | crash
+ *                           | status_hang -- `status --wait` really blocks, so a test
+ *                             can signal the adapter while it is genuinely waiting
+ *                           | status_dead -- `status --wait` itself dies with a
+ *                             message that is NOT "No job found", i.e. the adapter
+ *                             has lost track of a job that may still be running
  *   FAKE_COMPANION_RESULT   ok (default) | empty | crash | no_result
  *                           -- the reply lookup fails independently of the job,
  *                              because a job can succeed and still lose its text
@@ -36,6 +41,7 @@
  *   FAKE_COMPANION_RACE_STATE  file used to count those calls across processes
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 
 const mode = process.env.FAKE_COMPANION_MODE ?? "ok";
@@ -75,6 +81,21 @@ if (cmd === "task") {
 }
 
 if (cmd === "status") {
+  if (mode === "status_hang") {
+    // Actually blocks, unlike `timeout` which returns waitTimedOut immediately.
+    // A test that wants to signal the adapter mid-wait needs the adapter to
+    // really be mid-wait; otherwise it signals a process that already finished
+    // and the assertion passes for the wrong reason.
+    spawnSync("sleep", ["30"]);
+    process.exit(1);
+  }
+  if (mode === "status_dead") {
+    // Not the "No job found" shape: that one is tolerated as a store catching
+    // up. This is the companion or broker falling over while a background job
+    // is still alive.
+    process.stderr.write("broker connection reset\n");
+    process.exit(2);
+  }
   // The dispatch race, replayed. Counting happens on disk because each fake
   // invocation is its own process, exactly as the real companion is.
   const [raceKind, raceTimes] = (process.env.FAKE_COMPANION_RACE ?? "none").split(":");

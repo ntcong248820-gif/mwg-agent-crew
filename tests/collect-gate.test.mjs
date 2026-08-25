@@ -773,9 +773,13 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
     .map((d) => writeFile(join(ws, d, "skills", "x", "script.py"), "print('same bytes')\n"));
   const first = collectRun(manifestPath, { workspace: ws });
   t.check("a third party's sync still fails the gate", first.exitCode, 2);
-  t.check("...all four charged", first.scope.outOfScope.length, 4);
+  // Charged as PROTECTED, not merely out of scope: CLAUDE.md protects the four
+  // skill directories, and until 25/08 the code matched protected paths exactly
+  // so everything *inside* them was unprotected. Same event, higher severity.
+  t.check("...all four charged", first.scope.protectedHits.length, 4);
+  t.check("...and none of them read as ordinary out-of-scope", first.scope.outOfScope.length, 0);
   t.check("...every one of them by time, not by claim",
-    first.scope.outOfScope.every((p) => p.source === "inferred"), "true");
+    first.scope.protectedHits.every((p) => p.source === "inferred"), "true");
 
   // No reason means no dismissal: a waiver nobody has to justify is a threshold
   // loosened in disguise.
@@ -797,6 +801,39 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   const again = collectRun(manifestPath, { workspace: ws });
   t.check("a recorded dismissal survives the next gate run", again.exitCode, 0);
   t.check("...without repeating the flag", again.scope.dismissed.length, 4);
+  // A protected path stays labelled through the waiver, so a reader can see
+  // that what got waived was protected rather than merely undeclared.
+  t.check("...still marked as protected in the record",
+    again.scope.dismissed.filter((p) => p.protected).length, 4);
+}
+
+// --- a plain out-of-scope write, with nothing protected about it -------------
+{
+  const { ws, manifestPath } = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE, status: "done" }],
+  });
+  writeFile(join(ws, "docs", "unrelated-note.md"), "chữ nào đó\n");
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("an undeclared write outside the task fails the gate", r.exitCode, 2);
+  t.check("...as out-of-scope, not as protected", r.scope.outOfScope.length, 1);
+  t.check("...and nothing is called protected", r.scope.protectedHits.length, 0);
+}
+
+// --- protected means everything under a protected directory -----------------
+{
+  const { ws, manifestPath } = newRun({
+    jobs: [{
+      evidence: join(RUN_REL, "w1.md"), body: DONE, status: "done",
+      // Declared as allowed on purpose: a declaration must not be able to buy
+      // write access to a protected directory. Before 25/08 it could.
+      filesMayModify: [".claude/skills/"],
+    }],
+  });
+  writeFile(join(ws, ".claude", "skills", "seo-crew", "SKILL.md"), "# đổi\n");
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a declared prefix cannot unprotect a protected directory", r.exitCode, 2);
+  t.check("...the write is charged as protected", r.scope.protectedHits.length, 1);
+  t.check("...and never as in-scope", r.scope.inScope.some((p) => p.path.includes("SKILL.md")), false);
 }
 
 // --- HEAD movement: naming the blind spot instead of covering it ------------

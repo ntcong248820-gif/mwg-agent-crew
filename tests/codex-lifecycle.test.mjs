@@ -11,9 +11,9 @@
  *
  * Run: node mwg-agent-crew/tests/codex-lifecycle.test.mjs
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readdirSync, renameSync } from "node:fs";
-import { existsSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRun, addJob, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
@@ -245,6 +245,79 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   const toJob = readManifest(tmp).jobs[0];
   t.check("...with a failure the manifest can show", Boolean(toJob.failure), "true");
   t.check("...naming the transport that stalled", toJob.failure.includes("companion job did not settle"), "true");
+
+  // The other way a job goes unwatched: not "it never settled" but "the call
+  // that was watching it died". Cancel used to be reachable only through a
+  // returned snapshot, so this path left a live background job with nobody on
+  // it -- still writing, still spending.
+  const deadMarker = join(ws, "marker-status-dead.txt");
+  writeFileSync(deadMarker, "");
+  const { manifestPath: dmf } = createRun({ runDir: join(ws, "mf-dead"), runId: "app-dead", task: "t", workspace: ws, depth: 0 });
+  addJob(dmf, {
+    worker: "codex", role: "assist", transport: "app", title: "app status dead",
+    note: "ca thử: mất dấu job app giữa đường",
+    evidence: join(RUN_DIR_REL, "app-dead-case", "x.md"),
+  });
+  const dead = runApp({
+    mode: "status_dead", body: "", marker: deadMarker,
+    evidence: join(RUN_DIR_REL, "app-dead-case", "x.md"),
+    extra: ["--manifest", dmf, "--job", "1"],
+  });
+  t.check("a job whose status call dies fails", dead.exit, 1);
+  t.check("...and is cancelled rather than abandoned", readFileSync(deadMarker, "utf8").includes("cancel"), "true");
+  t.check("...with the death recorded in the manifest", readManifest(dmf).jobs[0].status, "failed");
+
+  // --- the adapter's own death ---------------------------------------------
+  // This adapter exists so that a death gets recorded instead of reading as
+  // `pending` forever -- and its own death was the one nobody recorded. A
+  // SIGTERM does not pass through a try/catch: Node exits, leaving the job it
+  // marked `running` marked `running` for good.
+  //
+  // Measured on the HEADLESS path on purpose. The app path waits inside
+  // `spawnSync`, which blocks the event loop, so Node cannot deliver a signal
+  // to a handler until that call returns -- the handler is real but unreachable
+  // there. Recovery for an app job killed mid-wait runs through the gate
+  // instead: `companionJobId` is written at dispatch, so the stale-job check
+  // and `crew-reconcile --cancel-orphans` can find it. Slower, but not lost.
+  {
+    const { manifestPath: smf } = createRun({ runDir: join(ws, "mf-sig"), runId: "hl-sig", task: "t", workspace: ws, depth: 0 });
+    addJob(smf, {
+      worker: "codex", role: "assist", transport: "headless", title: "headless killed",
+      evidence: join(RUN_DIR_REL, "hl-sig-case", "x.md"),
+    });
+    const child = spawn(process.execPath, [
+      ADAPTER, "--mode", "headless", "--prompt-file", brief,
+      "--evidence", join(RUN_DIR_REL, "hl-sig-case", "x.md"),
+      "--workspace", ws, "--timeout", "25s", "--idle-timeout", "20s", "--effort", "low",
+      "--manifest", smf, "--job", "1",
+    ], {
+      env: {
+        ...process.env,
+        PATH: `${FIXTURE_BIN}:${process.env.PATH}`,
+        // Emits only on stderr and never exits, so the adapter is genuinely
+        // mid-job -- with its event loop free -- when the signal lands.
+        FAKE_MODE: "stderr_only",
+        FAKE_EVIDENCE: join(ws, RUN_DIR_REL, "hl-sig-case", "x.md"),
+      },
+      stdio: "ignore",
+    });
+    const waitUntil = (fn, ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        if (fn()) return true;
+        spawnSync("sleep", ["0.2"]);
+      }
+      return false;
+    };
+    t.check("the adapter marks the job running before working",
+      waitUntil(() => readManifest(smf).jobs[0].status === "running", 15_000), true);
+    child.kill("SIGTERM");
+    waitUntil(() => readManifest(smf).jobs[0].status === "failed", 15_000);
+    const killed = readManifest(smf).jobs[0];
+    t.check("a SIGTERMed adapter records the job as failed", killed.status, "failed");
+    t.check("...naming the signal as the cause", /SIGTERM/.test(killed.failure ?? ""), true);
+    t.check("...so nothing is left reading as running", killed.status === "running", false);
+  }
 
   const noId = runApp({ mode: "no_job_id", evidence: join(RUN_DIR_REL, "app-noid.md") });
   t.check("a dispatch with no jobId is refused", noId.exit, 1);
