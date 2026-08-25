@@ -18,7 +18,14 @@ const LOCK_STALE_MS = 60_000;
 const LOCK_WAIT_MS = 10_000;
 const LOCK_POLL_MS = 50;
 
-export const MANIFEST_VERSION = 1;
+/**
+ * Bumped to 2 when the adapters started recording who delivered a job
+ * (`exitCode` / `conversationId`) and how long it was allowed to run
+ * (`timeoutMs`). The collect gate reads the version to know whether the absence
+ * of those fields means something: on a version-1 manifest it means nothing,
+ * because nothing wrote them yet.
+ */
+export const MANIFEST_VERSION = 2;
 
 class ManifestError extends Error {
   constructor(message) {
@@ -98,9 +105,15 @@ export function readManifest(manifestPath) {
   } catch (err) {
     throw new ManifestError(`manifest at ${manifestPath} is not valid JSON: ${err.message}`);
   }
-  if (parsed.version !== MANIFEST_VERSION) {
+  // Older manifests stay readable. Strict equality here meant that bumping the
+  // constant made every run already on disk unreadable -- collect and reconcile
+  // would throw on the entire history the moment a new field was added. Only a
+  // version this script has never heard of is refused, because that one may
+  // carry fields whose absence it would misread.
+  if (!Number.isInteger(parsed.version) || parsed.version > MANIFEST_VERSION) {
     throw new ManifestError(
-      `manifest version ${parsed.version} is not supported (expected ${MANIFEST_VERSION})`,
+      `manifest version ${parsed.version} is newer than this script understands (max ${MANIFEST_VERSION})\n` +
+      `  → update mwg-agent-crew/scripts/ instead of editing the manifest`,
     );
   }
   return parsed;
@@ -201,6 +214,10 @@ export function addJob(manifestPath, job) {
       // an undeclared write as a scope violation.
       filesMayModify: job.filesMayModify ?? [],
       status: "pending",
+      // Filled in by the adapter when the job starts. The collect gate uses it
+      // to decide how long "still running" is allowed to last for this job
+      // rather than assuming the global ceiling.
+      timeoutMs: null,
       conversationId: null,
       startedAt: null,
       endedAt: null,

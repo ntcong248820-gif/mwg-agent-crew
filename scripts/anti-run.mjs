@@ -323,6 +323,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dispatchedAt = new Date().toISOString();
   try {
     opts = parseArgv(process.argv.slice(2));
+    // Recorded before the job spawns, not after it returns. A job that is still
+    // working has no result to write, so without this the manifest showed it as
+    // `pending` with no start time -- and the collect gate cannot tell a live
+    // job from one that never launched, nor attribute any file it writes while
+    // it runs. `timeoutMs` goes down here for the same reason: the gate needs
+    // this job's own allowance to decide when silence means death.
+    if (opts.manifest && opts.job) {
+      const { updateJob } = await import("./crew-manifest.mjs");
+      updateJob(opts.manifest, Number(opts.job), {
+        status: "running",
+        startedAt: dispatchedAt,
+        timeoutMs: parseDuration(opts.timeout ?? DEFAULT_TIMEOUT),
+      });
+    }
     result = antiRun(opts);
   } catch (err) {
     // A failed job must be recorded, or collect cannot tell a job that broke

@@ -21,8 +21,43 @@ import { readWorkerStatus } from "./crew-guards.mjs";
 import { reconcileRun, resolveEvidence } from "./crew-reconcile.mjs";
 import { collectWriteScope } from "./crew-scope.mjs";
 
-/** A job past this age with no evidence is treated as dead, not as slow. */
+/**
+ * How long past a job's own timeout it may stay silent before the gate calls it
+ * dead.
+ *
+ * Deliberately generous. The adapter needs seconds, not minutes, to kill a job
+ * and record the failure -- but the two errors are not symmetric. Calling a live
+ * job dead opens `--abandon`, which throws the work away; calling a dead job
+ * live costs one more collect. So the margin sits well past what the adapter
+ * needs, and the boundary comparison below is inclusive for the same reason.
+ */
+const STALE_GRACE_MS = 10 * 60_000;
+
+/**
+ * Fallback for a manifest written before adapters recorded `timeoutMs`. Kept at
+ * the exact old constant so replaying an old run gives the same verdict it gave
+ * before.
+ */
 const STALE_AFTER_MS = 35 * 60_000;
+
+/**
+ * A job is judged dead only after its own allowance runs out, not after a fixed
+ * 35 minutes. The old constant was derived from the 30m ceiling, so a job that
+ * legitimately ran long read as dead, while a 5-minute job that died got half an
+ * hour of benefit of the doubt.
+ */
+function staleAfter(job) {
+  return Number.isFinite(job.timeoutMs) && job.timeoutMs > 0
+    ? job.timeoutMs + STALE_GRACE_MS
+    : STALE_AFTER_MS;
+}
+
+/**
+ * Statuses that mean "nobody has recorded an outcome yet". `running` is written
+ * by the adapter before it spawns, `pending` by addJob before that; neither is
+ * a result, and a job in either state with no evidence may simply be working.
+ */
+const IN_FLIGHT = new Set(["pending", "running"]);
 
 const PASS = new Set(["done", "done_with_concerns", "done_verified_manually"]);
 /** Verdicts a human has to resolve; these block, but they are not failures. */
@@ -54,7 +89,7 @@ function readEvidence(path) {
   return { bytes: stat.size, text: stat.size === 0 ? "" : readFileSync(path, "utf8") };
 }
 
-function judgeOne(job, workspace, now) {
+function judgeOne(job, workspace, now, manifestVersion) {
   const row = { seq: job.seq, worker: job.worker, title: job.title, status: job.status, flags: [], detail: "" };
   const evidenceAbs = resolveEvidence(job, workspace);
 
@@ -65,14 +100,15 @@ function judgeOne(job, workspace, now) {
       return row;
     }
     const started = Date.parse(job.startedAt ?? "") || null;
-    if (job.status === "pending" && started && now - started < STALE_AFTER_MS) {
+    const allowance = staleAfter(job);
+    if (IN_FLIGHT.has(job.status) && started && now - started <= allowance) {
       row.verdict = "RUNNING";
-      row.detail = `chưa có evidence, mới ${Math.round((now - started) / 60_000)} phút — có thể còn chạy`;
+      row.detail = `chưa có evidence, mới ${Math.round((now - started) / 60_000)}/${Math.round(allowance / 60_000)} phút — có thể còn chạy`;
       return row;
     }
-    row.verdict = job.status === "pending" ? "STALE" : "FAIL";
-    row.detail = job.status === "pending"
-      ? `pending mà không có evidence tại ${job.evidence} — coi như chết, bỏ bằng --abandon ${job.seq}`
+    row.verdict = IN_FLIGHT.has(job.status) ? "STALE" : "FAIL";
+    row.detail = IN_FLIGHT.has(job.status)
+      ? `${job.status} mà không có evidence tại ${job.evidence} sau ${Math.round(allowance / 60_000)} phút — coi như chết, bỏ bằng --abandon ${job.seq}`
       : `không có evidence tại ${job.evidence}`;
     return row;
   }
@@ -128,7 +164,12 @@ function judgeOne(job, workspace, now) {
     // runtime with neither field never heard from that runtime, and the file at
     // the evidence path came from somewhere else -- exactly what happened when a
     // Codex job died and the dispatcher wrote the report by hand.
-    : (job.worker !== "claude" && job.exitCode == null && job.conversationId == null)
+    // Only asked of a manifest new enough for the adapters to have written
+    // those fields. On a version-1 run nothing ever did, so the check fired on
+    // nearly every historical job -- and a WARN that is always on is a WARN
+    // people learn to scroll past, taking the real ones with it.
+    : (manifestVersion >= 2 && job.worker !== "claude"
+        && job.exitCode == null && job.conversationId == null)
       ? `evidence không do runtime giao (manifest không có exitCode/conversationId)`
     : null;
   if (warn) {
@@ -159,7 +200,7 @@ export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, n
   const manifest = readManifest(abs);
   const ws = workspace ?? manifest.workspace;
 
-  const rows = manifest.jobs.map((job) => judgeOne(job, ws, now));
+  const rows = manifest.jobs.map((job) => judgeOne(job, ws, now, manifest.version));
   const dupes = duplicateEvidence(manifest);
   const scope = collectWriteScope(manifest, { workspace: ws, graceMs });
   const costGates = manifest.jobs
@@ -169,7 +210,10 @@ export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, n
 
   const blocking = rows.some((r) => BLOCKING.has(r.verdict));
   const violation = scope.outOfScope.length > 0 || scope.protectedHits.length > 0 || dupes.length > 0;
-  const exitCode = violation ? 2 : blocking ? 1 : 0;
+  // 3 is not "worse than 2" -- it is both. Folding the two into one code let a
+  // reader who fixed the scope problem believe the run was clean while jobs were
+  // still unresolved underneath.
+  const exitCode = violation && blocking ? 3 : violation ? 2 : blocking ? 1 : 0;
   const unchecked = rows.length > 0 && scope.intervals.length === 0;
 
   return { runId: manifest.runId, task: manifest.task, dryRun, reconciled, rows, dupes, scope, costGates, unchecked, exitCode };
@@ -189,7 +233,7 @@ export function abandonJob(manifestPath, seq, { now = Date.now() } = {}) {
   const job = manifest.jobs.find((j) => j.seq === seq);
   if (!job) throw new Error(`không có job seq ${seq} trong ${manifestPath}`);
 
-  const verdict = judgeOne(job, manifest.workspace, now).verdict;
+  const verdict = judgeOne(job, manifest.workspace, now, manifest.version).verdict;
   if (verdict !== "STALE") {
     throw new Error(
       `job ${seq} đang là ${verdict}, không phải STALE — --abandon chỉ bỏ được job treo không evidence. `
@@ -250,9 +294,12 @@ function report(r) {
   const counted = r.rows.length - cancelled;
   console.log(`\n${pass}/${counted} job đạt${cancelled ? `, ${cancelled} job bỏ có chủ ý` : ""}${warn ? `, ${warn} job cần đọc mắt (WARN)` : ""} — exit ${r.exitCode}`);
   if (r.exitCode === 1) console.log("Chưa được viết report tổng: còn job chưa xong hoặc đang chờ quyết định.");
-  if (r.exitCode === 2) {
-    console.log("Chưa được viết report tổng: có vi phạm phạm vi ghi hoặc trùng evidence.");
-    if (r.rows.some((x) => BLOCKING.has(x.verdict))) console.log("Ngoài ra vẫn còn job chưa xong — xử cả bảng verdict.");
+  if (r.exitCode === 2) console.log("Chưa được viết report tổng: có vi phạm phạm vi ghi hoặc trùng evidence.");
+  if (r.exitCode === 3) {
+    console.log("Chưa được viết report tổng: vướng CẢ HAI —");
+    console.log("  (1) còn job chưa xong hoặc đang chờ quyết định;");
+    console.log("  (2) có vi phạm phạm vi ghi hoặc trùng evidence.");
+    console.log("  Sửa xong một bên vẫn ra exit khác 0; xử cả hai rồi chạy lại.");
   }
 }
 
@@ -278,7 +325,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const opts = parseArgs(process.argv.slice(2));
     const manifestPath = opts.positional[0];
     if (!manifestPath || opts.positional.length > 1) {
-      console.error("usage: crew-collect.mjs <manifest.json> [--abandon <seq>] [--grace <ms>] [--dry-run]");
+      console.error(
+        "usage: crew-collect.mjs <manifest.json> [--abandon <seq>] [--grace <ms>] [--dry-run]\n" +
+        "exit: 0 = được report | 1 = còn job chưa xong | 2 = vi phạm phạm vi ghi | 3 = cả 1 và 2",
+      );
       process.exit(2);
     }
     const dryRun = opts.flags.has("--dry-run");

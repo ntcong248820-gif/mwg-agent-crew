@@ -121,9 +121,49 @@ File ghi hợp lệ ra ngoài `tasks/{task}/` phải khai `filesMayModify` lúc 
 thúc bằng `/` và chỉ áp cho **chính job đã khai** — khai `docs` không mở đường cho
 `docs-secret.md`, và job 2 không dùng được quyền của job 1.
 
+### Bốn mã thoát, và tại sao có mã 3
+
+| Exit | Nghĩa |
+| --- | --- |
+| 0 | được viết report tổng |
+| 1 | còn job chưa xong hoặc đang chờ người quyết |
+| 2 | vi phạm phạm vi ghi, trùng evidence, hoặc chạm file được bảo vệ |
+| 3 | **cả 1 và 2** |
+
+3 không phải bậc nặng hơn 2. Trước đó hai loại vấn đề gộp vào một mã, nên người
+vừa dọn xong đống file ngoài phạm vi thấy gate hết đỏ và tưởng run đã sạch —
+trong khi vẫn còn job chưa ai xử.
+
+### Job im lặng bao lâu thì coi là chết
+
+Ngưỡng lấy từ `timeoutMs` mà chính adapter ghi vào manifest lúc bắt đầu job, cộng
+10 phút. Trước đó là hằng số 35 phút suy từ trần 30m, nên job 5 phút chết được ưu
+ái nửa tiếng còn job chạy dài hợp lệ bị đọc là chết. Manifest cũ không có
+`timeoutMs` thì rơi về đúng 35 phút như trước.
+
+Biên nghiêng về phía "còn chạy" có chủ ý: `STALE` là verdict duy nhất `--abandon`
+nhận, nên đoán sai về phía chết là vứt việc, còn đoán sai về phía sống chỉ tốn
+thêm một lần chạy collect.
+
+Adapter cũng ghi `status: "running"` + `startedAt` **trước khi** spawn. Không có
+bước đó, job đang chạy nằm trong manifest với `startedAt: null` — gate không phân
+biệt được job đang làm với job chưa từng khởi động, và mọi file nó ghi trong lúc
+chạy đều không quy được cho ai.
+
+### `MANIFEST_VERSION` là mốc để đọc sự vắng mặt
+
+WARN "evidence không do runtime giao" dựa vào chỗ vắng `exitCode`/`conversationId`.
+Trên manifest version 1 thì chưa có gì từng ghi hai field đó, nên WARN nổ gần như
+mọi job lịch sử — mà WARN lúc nào cũng sáng thì người đọc học cách lướt qua, kéo
+theo cả cái WARN thật. Nên WARN chỉ hỏi khi `version >= 2`.
+
+`readManifest` chấp nhận mọi version **≤** hằng số nó biết, chỉ từ chối version
+lớn hơn. So bằng `!==` đồng nghĩa mỗi lần thêm field là toàn bộ run cũ trên đĩa
+thành không đọc được.
+
 ### `--abandon` không phải nút xoá đỏ
 
-`--abandon <seq>` chỉ bỏ được job đang là `STALE` (pending, quá 35 phút, không có
+`--abandon <seq>` chỉ bỏ được job đang là `STALE` (im lặng quá hạn của chính nó, không có
 evidence). Job mà adapter đã ghi `failed` + `failure` thì **từ chối** — nếu không,
 một cờ duy nhất biến exit 1 thành exit 0 và job chết biến khỏi mẫu số. `--dry-run`
 phủ luôn `--abandon`, vì cờ an toàn mà không phủ cờ ghi thì vô nghĩa.

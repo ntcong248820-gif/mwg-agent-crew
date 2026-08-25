@@ -396,4 +396,127 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   t.check("...and without it the job is abandoned", readManifest(manifestPath).jobs[0].status, "cancelled");
 }
 
+// --- G1: provenance is only asked of a manifest that could have answered ---
+{
+  // A run from before the adapters recorded who delivered a job. The WARN fired
+  // on every one of these, and a warning that is always on is not a warning.
+  const { ws, manifestPath } = newRun({ jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE }] });
+  const m = readManifest(manifestPath);
+  writeFile(manifestPath, JSON.stringify({ ...m, version: 1 }, null, 2));
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a version-1 run passes without a provenance WARN", r.rows[0].flags.length, 0);
+}
+{
+  const { ws, manifestPath } = newRun({ jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE }] });
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a version-2 job with no exitCode still warns", r.rows[0].flags.join(","), "WARN");
+  t.check("...while passing", r.rows[0].verdict, "PASS");
+}
+{
+  const { ws, manifestPath } = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE, patch: { exitCode: 0 } }],
+  });
+  t.check("a job the runtime vouched for does not warn",
+    collectRun(manifestPath, { workspace: ws }).rows[0].flags.length, 0);
+}
+
+// --- G1: bumping the version must not orphan the runs already on disk ---
+{
+  const { manifestPath } = newRun({ jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE }] });
+  const m = readManifest(manifestPath);
+  writeFile(manifestPath, JSON.stringify({ ...m, version: 1 }, null, 2));
+  let readable = "true";
+  try { readManifest(manifestPath); } catch { readable = "false"; }
+  t.check("an older manifest stays readable", readable, "true");
+
+  writeFile(manifestPath, JSON.stringify({ ...m, version: 99 }, null, 2));
+  let refused = "false";
+  try { readManifest(manifestPath); } catch { refused = "true"; }
+  t.check("a manifest from a newer script is refused", refused, "true");
+}
+
+// --- G2: how long silence is allowed comes from the job, not a constant ---
+{
+  const at = Date.now() - 30 * 60_000;
+  const { ws, manifestPath } = newRun({
+    at,
+    jobs: [{ evidence: join(RUN_REL, "slow.md"), status: "running", endedAt: null, patch: { timeoutMs: 25 * 60_000 } }],
+  });
+  t.check("a 25m job silent for 30m is still running",
+    collectRun(manifestPath, { workspace: ws }).rows[0].verdict, "RUNNING");
+}
+{
+  const at = Date.now() - 30 * 60_000;
+  const { ws, manifestPath } = newRun({
+    at,
+    jobs: [{ evidence: join(RUN_REL, "quick.md"), status: "running", endedAt: null, patch: { timeoutMs: 5 * 60_000 } }],
+  });
+  t.check("a 5m job silent for 30m is dead", collectRun(manifestPath, { workspace: ws }).rows[0].verdict, "STALE");
+}
+{
+  // No timeoutMs: an old manifest must behave exactly as it did before.
+  const { ws, manifestPath } = newRun({
+    at: Date.now() - 30 * 60_000,
+    jobs: [{ evidence: join(RUN_REL, "old.md"), status: "pending", endedAt: null }],
+  });
+  t.check("without timeoutMs the old 35m allowance applies",
+    collectRun(manifestPath, { workspace: ws }).rows[0].verdict, "RUNNING");
+  const later = newRun({
+    at: Date.now() - 40 * 60_000,
+    jobs: [{ evidence: join(RUN_REL, "old.md"), status: "pending", endedAt: null }],
+  });
+  t.check("...and past it the job is dead",
+    collectRun(later.manifestPath, { workspace: later.ws }).rows[0].verdict, "STALE");
+}
+{
+  // `running` is what the adapter writes before it spawns. Reading it as a
+  // recorded outcome would have failed every job that was still working.
+  const { ws, manifestPath } = newRun({
+    at: Date.now() - 60_000,
+    jobs: [{ evidence: join(RUN_REL, "live.md"), status: "running", endedAt: null }],
+  });
+  t.check("a job the adapter marked running is not a failure",
+    collectRun(manifestPath, { workspace: ws }).rows[0].verdict, "RUNNING");
+}
+
+// --- G3: two problems must not read as one ---------------------------
+{
+  const { ws, manifestPath } = newRun({
+    jobs: [
+      { evidence: join(RUN_REL, "w1.md"), body: DONE },
+      { evidence: join(RUN_REL, "w2.md"), body: "hỏng\n\nStatus: BLOCKED\n" },
+    ],
+  });
+  writeFile(join(ws, "stray.md"), "outside scope\n");
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("an unresolved job plus a scope violation exits 3", r.exitCode, 3);
+  t.check("...and the CLI says so", runCli(manifestPath).out.includes("CẢ HAI"), "true");
+}
+{
+  const { ws, manifestPath } = newRun({ jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE }] });
+  writeFile(join(ws, "stray.md"), "outside scope\n");
+  t.check("a scope violation alone still exits 2", collectRun(manifestPath, { workspace: ws }).exitCode, 2);
+}
+{
+  const { ws, manifestPath } = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: "hỏng\n\nStatus: BLOCKED\n" }],
+  });
+  t.check("an unresolved job alone still exits 1", collectRun(manifestPath, { workspace: ws }).exitCode, 1);
+}
+
+// --- a job whose adapter died after the work landed is the ordinary repair ---
+{
+  // `running` is bookkeeping, so reconcile patching over it must not be
+  // reported as the runtime contradicting the evidence.
+  const { ws, manifestPath } = newRun({
+    jobs: [{
+      evidence: join(RUN_REL, "w1.md"), body: DONE, status: "running", endedAt: null,
+      patch: { conversationId: "c1" },
+    }],
+  });
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("reconcile from running to done is a clean pass", r.rows[0].verdict, "PASS");
+  t.check("...with no invented disagreement", r.rows[0].flags.length, 0);
+}
+
 process.exit(t.finish() ? 0 : 1);

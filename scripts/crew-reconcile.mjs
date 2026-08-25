@@ -36,6 +36,9 @@ import { readWorkerStatus } from "./crew-guards.mjs";
  * patched when its evidence carries a real Status line, and a job whose status
  * already came from that evidence (reportedStatus is set) is left alone.
  */
+/** States that record no outcome, so patching over them is not a disagreement. */
+const BOOKKEEPING = new Set(["pending", "running"]);
+
 /** Verdicts that already mean "passed"; reconcile must not rewrite these. */
 const TERMINAL_PASS = new Set(["done", "done_with_concerns", "done_verified_manually"]);
 
@@ -107,9 +110,13 @@ export function reconcileRun(manifestPath, { dryRun = false } = {}) {
         // so the first collect flagged the job and a second collect showed a
         // clean pass. Bước 7 tells the dispatcher to re-run collect while jobs
         // are live, which made the final gating run the one that lost the flag.
-        // `pending` is excluded: that is a job nobody got round to recording,
-        // not a runtime that claimed the opposite of the evidence.
-        disagreement: job.status === "pending" ? undefined
+        // `pending` and `running` are excluded: those are bookkeeping states --
+        // one written by addJob, one by the adapter before it spawns -- not a
+        // runtime claiming the opposite of the evidence. Reporting "manifest
+        // ghi running, evidence phán DONE" as a disagreement would put a WARN on
+        // every job whose adapter died after the worker finished, which is the
+        // ordinary case reconcile exists to repair.
+        disagreement: BOOKKEEPING.has(job.status) ? undefined
           : `manifest ghi ${job.status}, evidence phán ${verdict.reported}`,
       });
       appendNote(abs, job.seq, `reconcile: ${job.status} → ${verdict.status} theo evidence trên đĩa`);

@@ -37,6 +37,17 @@ export const DEFAULT_GRACE_MS = 120_000;
  */
 export const MAX_JOB_SPAN_MS = 35 * 60_000;
 
+/**
+ * The widest window a job may be given, preferring what the adapter recorded
+ * over the derived ceiling. A job that was only ever allowed five minutes must
+ * not be charged with what the user edited half an hour later.
+ */
+function jobSpanMs(job, graceMs) {
+  return Number.isFinite(job.timeoutMs) && job.timeoutMs > 0
+    ? job.timeoutMs + graceMs
+    : MAX_JOB_SPAN_MS;
+}
+
 /** Ceiling on entries read per declared prefix, so a stray declaration cannot hang the gate. */
 const WALK_LIMIT = 20_000;
 
@@ -76,7 +87,7 @@ export function jobIntervals(manifest, graceMs = DEFAULT_GRACE_MS) {
       // like a missing one.
       return job.endedAt && !job.endedAtInferred
         ? { seq: job.seq, from, to: Date.parse(job.endedAt) + graceMs, bounded: true }
-        : { seq: job.seq, from, to: Math.min(from + MAX_JOB_SPAN_MS, Date.parse(job.endedAt ?? "") + graceMs || Infinity), bounded: false };
+        : { seq: job.seq, from, to: Math.min(from + jobSpanMs(job, graceMs), Date.parse(job.endedAt ?? "") + graceMs || Infinity), bounded: false };
     });
 }
 
