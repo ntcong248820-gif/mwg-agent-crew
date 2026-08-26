@@ -318,6 +318,7 @@ function needsHuman(result) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   let opts = {};
   let result = null;
+  let claimed = false;
   // Captured before the job starts so a failed job still has a duration; the
   // failure path never sees the timestamps that antiRun() builds internally.
   const dispatchedAt = new Date().toISOString();
@@ -342,6 +343,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         startedAt: dispatchedAt,
         timeoutMs: parseDuration(opts.timeout ?? DEFAULT_TIMEOUT),
       });
+      // Only a job this process actually claimed may be written by its failure
+      // path. Without this, a refused second dispatch ("already running") fell
+      // into the catch below and recorded the job as `failed` -- erasing the
+      // FIRST invocation's `running` state and freeing its slot while it was
+      // still working. A guard whose refusal gets overwritten by the caller's
+      // own error handler is not a guard.
+      claimed = true;
     }
     result = antiRun(opts);
   } catch (err) {
@@ -349,8 +357,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // from one that never started -- both would read as "pending" forever.
     if (opts.manifest && opts.job) {
       try {
-        const { updateJob } = await import("./crew-manifest.mjs");
-        updateJob(opts.manifest, Number(opts.job), {
+        const { updateJob, recordUnclaimedFailure } = await import("./crew-manifest.mjs");
+        // A job this process claimed is its own to write. One it never claimed
+        // may belong to another invocation that is still running, and that one
+        // must not be overwritten -- see recordUnclaimedFailure.
+        const record = claimed ? updateJob : recordUnclaimedFailure;
+        record(opts.manifest, Number(opts.job), {
           status: "failed",
           startedAt: dispatchedAt,
           endedAt: new Date().toISOString(),

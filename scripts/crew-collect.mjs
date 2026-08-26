@@ -233,8 +233,15 @@ export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, n
   // them stopped anything. The job stays PASS -- evidence outranks the runtime,
   // that rule does not move -- but the run is not report-able until a person
   // says out loud that they read it.
-  const acked = new Set((manifest.runtimeAcks ?? []).map((a) => a.seq));
-  const unread = rows.filter((r) => r.runtimeDisagreement && !acked.has(r.seq));
+  // Keyed by what was acknowledged, not by which job. An ack recorded against
+  // one disagreement must not cover a different one that shows up later on the
+  // same job -- otherwise the reader vouched for something they never saw.
+  const acked = new Map((manifest.runtimeAcks ?? []).map((a) => [a.seq, a.why ?? null]));
+  const unread = rows.filter((r) => {
+    if (!r.runtimeDisagreement) return false;
+    const job = manifest.jobs.find((j) => j.seq === r.seq);
+    return acked.get(r.seq) !== (job.runtimeVerdict ?? job.disagreement ?? null);
+  });
   const violation = scope.outOfScope.length > 0 || scope.protectedHits.length > 0 || dupes.length > 0;
   // 3 is not "worse than 2" -- it is both. Folding the two into one code let a
   // reader who fixed the scope problem believe the run was clean while jobs were
@@ -265,15 +272,25 @@ function recordRuntimeAcks(abs, seqs, reason) {
   }
   const at = new Date().toISOString();
   updateManifest(abs, (m) => {
-    const known = new Set(m.jobs.map((j) => j.seq));
+    const bySeq = new Map(m.jobs.map((j) => [j.seq, j]));
+    const acks = [];
     for (const seq of seqs) {
-      if (!known.has(seq)) throw new Error(`--ack-runtime ${seq}: run này không có job ${seq}`);
+      const job = bySeq.get(seq);
+      if (!job) throw new Error(`--ack-runtime ${seq}: run này không có job ${seq}`);
+      // An ack aimed at a job with nothing to acknowledge used to sit in the
+      // manifest waiting: when a disagreement appeared afterwards it was
+      // already covered, and the gate opened on a mismatch nobody had read.
+      const why = job.runtimeVerdict ?? job.disagreement ?? null;
+      if (!why) {
+        throw new Error(
+          `--ack-runtime ${seq}: job này chưa có bất đồng runtime nào để nhận\n` +
+          "  → chỉ ack sau khi gate nêu tên job đó; ack trước là ký khống cho lần lệch sau",
+        );
+      }
+      acks.push({ seq, why, reason: reason.trim(), at });
     }
-    const existing = m.runtimeAcks ?? [];
-    const fresh = seqs
-      .filter((seq) => !existing.some((a) => a.seq === seq))
-      .map((seq) => ({ seq, reason: reason.trim(), at }));
-    m.runtimeAcks = [...existing, ...fresh];
+    const existing = (m.runtimeAcks ?? []).filter((a) => !acks.some((x) => x.seq === a.seq && x.why === a.why));
+    m.runtimeAcks = [...existing, ...acks];
     return m;
   });
 }

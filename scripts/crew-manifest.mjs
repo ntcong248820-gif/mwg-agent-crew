@@ -596,6 +596,30 @@ export function claimRunSlot(manifestPath, seq, { startedAt, timeoutMs }) {
   return claimed;
 }
 
+/**
+ * Records a failure for a job this process never claimed -- unless someone else
+ * is holding it.
+ *
+ * The adapters' catch-path has to keep writing for the ordinary case: a
+ * dispatch refused before the claim (wrong transport, bad duration) should
+ * leave its reason on the record, or the dispatcher gets silence. But the same
+ * write, on a job another invocation is running, erased that invocation's
+ * `running` state and freed its parallel slot mid-flight. So the write is kept
+ * and the one dangerous case is carved out, inside the lock -- checking the
+ * status first and writing after would race with the very adapter it protects.
+ */
+export function recordUnclaimedFailure(manifestPath, seq, patch) {
+  let wrote = false;
+  updateManifest(manifestPath, (m) => {
+    const job = m.jobs.find((j) => j.seq === seq);
+    if (!job || job.status === "running") return m;
+    Object.assign(job, patch);
+    wrote = true;
+    return m;
+  });
+  return wrote;
+}
+
 export function assertTransport(manifestPath, seq, mode) {
   const manifest = readManifest(manifestPath);
   if (!(manifest.version >= 3)) return null;
