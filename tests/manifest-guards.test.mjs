@@ -11,8 +11,9 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   createRun, addJob, updateJob, updateManifest, readManifest, writeManifest, MAX_DEPTH,
+  claimRunSlot, MAX_JOBS, MAX_PARALLEL,
 } from "../scripts/crew-manifest.mjs";
-import { parseDuration } from "../scripts/crew-guards.mjs";
+import { parseDuration, readPrompt, MAX_BRIEF_BYTES } from "../scripts/crew-guards.mjs";
 import { makeChecker, tmpWorkspace, MODULE_ROOT } from "./helpers.mjs";
 
 const t = makeChecker("manifest-guards");
@@ -166,6 +167,82 @@ const threw = (fn) => { try { fn(); return null; } catch (err) { return err.mess
   t.check("junk after a valid duration is refused", /cannot parse/.test(threw(() => parseDuration("15m; rm -rf /")) ?? ""), true);
   t.check("surrounding whitespace is still fine", parseDuration("  15m "), 900_000);
   t.check("the ceiling still applies", /ceiling/.test(threw(() => parseDuration("31m")) ?? ""), true);
+}
+
+// --- the run-shape ceilings are checked by code, not by the reader ----------
+{
+  // MAX_JOBS and MAX_PARALLEL were written in SKILL.md and nowhere else, so the
+  // one process nothing was watching -- the dispatcher -- could exceed both.
+  const { manifestPath } = freshRun();
+  const job = (n) => ({
+    worker: "codex", role: "assist", transport: "headless", title: `j${n}`,
+    evidence: join("tasks", "t", "reports", "crew-x", `w${n}.md`),
+  });
+  for (let n = 1; n <= MAX_JOBS; n += 1) addJob(manifestPath, job(n));
+  t.check(`a run holds ${MAX_JOBS} jobs`, readManifest(manifestPath).jobs.length, MAX_JOBS);
+
+  const over = threw(() => addJob(manifestPath, job(MAX_JOBS + 1)));
+  t.check("...and refuses the next one", /max 6/.test(over ?? ""), true);
+  t.check("...without recording it", readManifest(manifestPath).jobs.length, MAX_JOBS);
+}
+
+{
+  const { manifestPath } = freshRun();
+  const started = new Date().toISOString();
+  for (let n = 1; n <= 4; n += 1) {
+    addJob(manifestPath, {
+      worker: "codex", role: "assist", transport: "headless", title: `j${n}`,
+      evidence: join("tasks", "t", "reports", "crew-x", `w${n}.md`),
+    });
+  }
+  for (let n = 1; n <= MAX_PARALLEL; n += 1) {
+    claimRunSlot(manifestPath, n, { startedAt: started, timeoutMs: 900_000 });
+  }
+  const fourth = threw(() => claimRunSlot(manifestPath, 4, { startedAt: started, timeoutMs: 900_000 }));
+  t.check(`a ${MAX_PARALLEL + 1}th live job is refused`, /max 3/.test(fourth ?? ""), true);
+  t.check("...and the refusal names who is holding the slots", /1, 2, 3/.test(fourth ?? ""), true);
+  t.check("...leaving the refused job untouched", readManifest(manifestPath).jobs[3].status, "pending");
+
+  // Dispatching the same job twice would have the second adapter overwrite the
+  // first one's startedAt, so the gate could no longer attribute either.
+  const twice = threw(() => claimRunSlot(manifestPath, 1, { startedAt: started, timeoutMs: 900_000 }));
+  t.check("the same job cannot be dispatched twice", /already recorded as running/.test(twice ?? ""), true);
+
+  // A slot held by a corpse has to come back, or three dead adapters close the
+  // run to all further work. Released by time, not by a verdict: the job stays
+  // `running` and reconcile is still the thing that judges it.
+  updateJob(manifestPath, 1, { startedAt: new Date(Date.now() - 90 * 60_000).toISOString(), timeoutMs: 900_000 });
+  claimRunSlot(manifestPath, 4, { startedAt: started, timeoutMs: 900_000 });
+  t.check("a slot held past its timeout is released", readManifest(manifestPath).jobs[3].status, "running");
+  t.check("...but the stale job is not judged by this", readManifest(manifestPath).jobs[0].status, "running");
+}
+
+// --- the brief ceiling is measured, not requested ---------------------------
+{
+  // 23 of the 24 briefs written after the rule landed were under the cap. The
+  // one that was not (2227 bytes) was written by the dispatcher who had just
+  // criticised long briefs -- which is the whole argument for measuring it.
+  const ws = tmpWorkspace("brief-");
+  const small = join(ws, "ok.md");
+  const big = join(ws, "big.md");
+  writeFileSync(small, "làm X, chấp nhận khi Y\n", "utf8");
+  writeFileSync(big, "x".repeat(MAX_BRIEF_BYTES + 1), "utf8");
+
+  t.check("a brief under the cap passes", readPrompt({ promptFile: small }).length > 0, true);
+  const over = threw(() => readPrompt({ promptFile: big }));
+  t.check("a brief over the cap is refused", /over the 2048-byte ceiling/.test(over ?? ""), true);
+  t.check("...and the refusal says what to cut", /cut the HOW/.test(over ?? ""), true);
+
+  // Measured in bytes, not characters: a Vietnamese brief that fits a
+  // character count can still be a third over the byte ceiling.
+  const viet = "ữ".repeat(1000); // 3 bytes each
+  t.check("the cap counts bytes, not characters",
+    /over the 2048-byte ceiling/.test(threw(() => readPrompt({ prompt: viet })) ?? ""), true);
+
+  // The inline path is the same rule; a dispatcher that hit the cap must not be
+  // able to route around it by moving the text onto the command line.
+  t.check("--prompt is capped the same way",
+    /over the 2048-byte ceiling/.test(threw(() => readPrompt({ prompt: "x".repeat(MAX_BRIEF_BYTES + 1) })) ?? ""), true);
 }
 
 process.exit(t.finish() ? 0 : 1);

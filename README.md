@@ -31,6 +31,35 @@ chỉ trỏ vào.
 4. Kim tự tháp sâu tối đa 2 tầng (Claude → worker). Chỉ Codex được fan-out tầng 3.
 5. Không git worktree. Cô lập bằng quyền sở hữu task folder.
 
+### Ngưỡng nào do code ép, ngưỡng nào chỉ là chữ
+
+Tới 25/08 cả ba ngưỡng dưới đây chỉ nằm trong `SKILL.md`, không chỗ nào đo. Một
+luật không ai đo là một sở thích — và người trượt nó là người điều phối, tức là
+process duy nhất không có chốt nào canh. Bằng chứng: trong 24 brief viết sau khi
+có luật ≤2 KB, 23 cái dưới ngưỡng và một cái 2227 B, do chính người vừa chê brief
+dài viết ra.
+
+| Ngưỡng | Giá trị | Ép ở đâu | Từ chối thế nào |
+| --- | --- | --- | --- |
+| `MAX_JOBS` | 6 | `addJob` | không thêm job thứ 7 vào manifest |
+| `MAX_PARALLEL` | 3 | `claimRunSlot`, trong lock | adapter thứ 4 không được đánh dấu `running` |
+| Brief | 2048 B | `readPrompt`, cả `--prompt-file` lẫn `--prompt` | adapter không bắn job |
+
+Ba chỗ đó là cổ chai thật, không phải chỗ thuận tay: mọi job đều đi qua `addJob`,
+mọi adapter đều `claimRunSlot` trước khi spawn, và cả hai adapter đều đọc brief
+bằng `readPrompt`. Đếm `MAX_PARALLEL` phải nằm **trong lock manifest**; đếm ngoài
+lock thì ba adapter khởi động cách nhau vài mili giây cùng đọc "đang chạy 2" rồi
+cùng đi tiếp.
+
+Không có cờ nới. Một cửa thoát mà caller bật được ngay trong cùng lời gọi thì
+cùng hình dạng với đúng bốn lỗi manifest mà vòng rà 25/08 tìm ra: validate xong
+rồi cho ghi đè.
+
+Một chỗ tinh: slot `running` được **trả lại theo thời gian**, không theo phán
+quyết. Adapter chết không kịp ghi sẽ để `running` nằm đó vĩnh viễn, và nếu đếm cả
+xác thì ba cái xác đóng luôn run. Job quá `timeoutMs` cộng 10 phút thì slot được
+nhả — nhưng job vẫn là `running`, và `crew-reconcile` vẫn là thứ phán nó.
+
 ## Số đo nền (2026-08-18)
 
 | Hạng mục | Giá trị |
@@ -224,13 +253,36 @@ thúc bằng `/` và chỉ áp cho **chính job đã khai** — khai `docs` khô
 | Exit | Nghĩa |
 | --- | --- |
 | 0 | được viết report tổng |
-| 1 | còn job chưa xong hoặc đang chờ người quyết |
+| 1 | còn job chưa xong, đang chờ người quyết, hoặc runtime lệch evidence chưa ai đọc |
 | 2 | vi phạm phạm vi ghi, trùng evidence, hoặc chạm file được bảo vệ |
 | 3 | **cả 1 và 2** |
 
 3 không phải bậc nặng hơn 2. Trước đó hai loại vấn đề gộp vào một mã, nên người
 vừa dọn xong đống file ngoài phạm vi thấy gate hết đỏ và tưởng run đã sạch —
 trong khi vẫn còn job chưa ai xử.
+
+#### Runtime lệch evidence: PASS nhưng chưa được viết report (26/08)
+
+Trước 26/08, job mà runtime báo fail còn evidence phán DONE ra `PASS` + `WARN`
+và gate thoát 0 — trong khi chính adapter đã thoát 3, nghĩa là "phải có người
+đọc". Hai câu trả lời cho một sự việc, và chỉ một câu dừng được cái gì.
+
+Cái **không** đổi: verdict của job vẫn `PASS`. Evidence trên đĩa vẫn outrank
+runtime, luật đó không nhúc nhích. Cái đổi là run có được viết report tổng khi
+chưa ai đọc hay không.
+
+Cái này chặn trên một sự thật không rerun nào xoá được, nên nó phải có đường
+thoả mãn — gate không thoả mãn nổi là gate người ta học cách đi vòng. Đường đó
+là một câu của người đọc, ghi lại cạnh run:
+
+```bash
+node mwg-agent-crew/scripts/crew-collect.mjs "$RUN_DIR/manifest.json" \
+  --ack-runtime 2 --reason "đọc evidence rồi, agy báo ERROR nhưng bài đã ghi đủ"
+```
+
+`--reason` bắt buộc, cùng lý do với `--not-ours`: nhận một job mà runtime báo
+fail thì phải để lại câu giải thích, không thì lần sau không ai truy được. Ack
+ghi vào `manifest.runtimeAcks`, và WARN **vẫn còn** cho người đọc sau.
 
 ### Adapter chết thì cũng phải tự ghi
 

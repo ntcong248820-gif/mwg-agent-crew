@@ -153,6 +153,10 @@ function judgeOne(job, workspace, now, manifestVersion) {
   // recorded a failure, or nobody vouched for the evidence, and the gate shows
   // the disagreement instead of resolving it -- only a reader can tell a
   // runtime glitch from a job that half-worked.
+  // Two of the four WARN kinds are the same event: something that ran the job
+  // recorded a failure while the evidence judged itself a pass. That one is
+  // gating (see `unread` below); the other two are not.
+  row.runtimeDisagreement = Boolean(job.runtimeVerdict || job.disagreement);
   const warn = job.runtimeVerdict ? `runtime báo fail nhưng evidence đạt`
     : job.disagreement ? job.disagreement
     : job.failure ? `manifest có ghi lỗi nhưng evidence đạt`
@@ -199,12 +203,13 @@ function costGateReason(job, workspace) {
   return named || "không nêu tên API";
 }
 
-export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, now = Date.now(), notOurs = [], reason = null } = {}) {
+export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, now = Date.now(), notOurs = [], ackRuntime = [], reason = null } = {}) {
   const abs = resolve(manifestPath);
   // Reconcile first: evidence on disk outranks the manifest, and a gate that
   // judged a stale manifest would fail jobs that had already finished.
   const reconciled = reconcileRun(abs, { dryRun });
   if (notOurs.length && !dryRun) recordDismissals(abs, notOurs, reason);
+  if (ackRuntime.length && !dryRun) recordRuntimeAcks(abs, ackRuntime, reason);
   const manifest = readManifest(abs);
   const ws = workspace ?? manifest.workspace;
 
@@ -222,14 +227,55 @@ export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, n
     .filter((g) => g.api);
 
   const blocking = rows.some((r) => BLOCKING.has(r.verdict));
+  // A runtime that recorded failure over evidence that passed used to be a WARN
+  // on a run the gate still called clean, while the adapter itself had exited 3
+  // ("a human has to read this"). Two answers to one event, and only one of
+  // them stopped anything. The job stays PASS -- evidence outranks the runtime,
+  // that rule does not move -- but the run is not report-able until a person
+  // says out loud that they read it.
+  const acked = new Set((manifest.runtimeAcks ?? []).map((a) => a.seq));
+  const unread = rows.filter((r) => r.runtimeDisagreement && !acked.has(r.seq));
   const violation = scope.outOfScope.length > 0 || scope.protectedHits.length > 0 || dupes.length > 0;
   // 3 is not "worse than 2" -- it is both. Folding the two into one code let a
   // reader who fixed the scope problem believe the run was clean while jobs were
   // still unresolved underneath.
-  const exitCode = violation && blocking ? 3 : violation ? 2 : blocking ? 1 : 0;
+  const stopped = blocking || unread.length > 0;
+  const exitCode = violation && stopped ? 3 : violation ? 2 : stopped ? 1 : 0;
   const unchecked = rows.length > 0 && scope.intervals.length === 0;
 
-  return { runId: manifest.runId, task: manifest.task, dryRun, reconciled, rows, dupes, scope, costGates, unchecked, head, exitCode };
+  return { runId: manifest.runId, task: manifest.task, dryRun, reconciled, rows, dupes, scope, costGates, unchecked, head, unread, exitCode };
+}
+
+/**
+ * Records that a person read a runtime/evidence disagreement and stands by the
+ * pass.
+ *
+ * A gate that can never be satisfied is a gate people route around, and this
+ * one blocks on a condition no rerun can clear -- the disagreement is a fact
+ * about a job that already finished. So the release is an explicit sentence
+ * from a reader, kept next to the run, rather than a flag that turns the check
+ * off. Same shape as `--not-ours`, for the same reason.
+ */
+function recordRuntimeAcks(abs, seqs, reason) {
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error(
+      "--ack-runtime cần --reason \"<đọc evidence rồi, vì sao vẫn tính đạt>\"\n" +
+      "  → nhận một job mà runtime báo fail thì phải để lại câu giải thích, không thì lần sau không ai truy được",
+    );
+  }
+  const at = new Date().toISOString();
+  updateManifest(abs, (m) => {
+    const known = new Set(m.jobs.map((j) => j.seq));
+    for (const seq of seqs) {
+      if (!known.has(seq)) throw new Error(`--ack-runtime ${seq}: run này không có job ${seq}`);
+    }
+    const existing = m.runtimeAcks ?? [];
+    const fresh = seqs
+      .filter((seq) => !existing.some((a) => a.seq === seq))
+      .map((seq) => ({ seq, reason: reason.trim(), at }));
+    m.runtimeAcks = [...existing, ...fresh];
+    return m;
+  });
 }
 
 /**
@@ -354,12 +400,20 @@ function report(r) {
     }
   }
 
+  if (r.unread?.length) {
+    console.log("\nRUNTIME LỆCH EVIDENCE — chặn cho tới khi có người đọc:");
+    for (const row of r.unread) {
+      console.log(`  job ${row.seq}: ${row.detail}`);
+    }
+    console.log(`  Đọc xong mà vẫn tính đạt thì chạy: --ack-runtime ${r.unread.map((x) => x.seq).join(" --ack-runtime ")} --reason "..."`);
+  }
+
   const pass = r.rows.filter((x) => x.verdict === "PASS").length;
   const warn = r.rows.filter((x) => x.flags.includes("WARN")).length;
   const cancelled = r.rows.filter((x) => x.verdict === "CANCELLED").length;
   const counted = r.rows.length - cancelled;
   console.log(`\n${pass}/${counted} job đạt${cancelled ? `, ${cancelled} job bỏ có chủ ý` : ""}${warn ? `, ${warn} job cần đọc mắt (WARN)` : ""} — exit ${r.exitCode}`);
-  if (r.exitCode === 1) console.log("Chưa được viết report tổng: còn job chưa xong hoặc đang chờ quyết định.");
+  if (r.exitCode === 1) console.log("Chưa được viết report tổng: còn job chưa xong, đang chờ quyết định, hoặc runtime lệch evidence chưa ai đọc.");
   if (r.exitCode === 2) console.log("Chưa được viết report tổng: có vi phạm phạm vi ghi hoặc trùng evidence.");
   if (r.exitCode === 3) {
     console.log("Chưa được viết report tổng: vướng CẢ HAI —");
@@ -496,7 +550,7 @@ function parseArgs(argv) {
   const withValue = new Set(["--abandon", "--grace", "--reason", "--report"]);
   // Repeatable, because dismissing four files from one stray sync should be one
   // command with one reason, not four runs of the gate.
-  const repeatable = new Set(["--not-ours"]);
+  const repeatable = new Set(["--not-ours", "--ack-runtime"]);
   const opts = { flags: new Set(), values: new Map(), lists: new Map(), positional: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -519,9 +573,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!manifestPath || opts.positional.length > 1) {
       console.error(
         "usage: crew-collect.mjs <manifest.json> [--abandon <seq>] [--grace <ms>] [--dry-run]\n" +
-        "                            [--not-ours <path>]... --reason \"<vì sao>\"\n" +
+        "                            [--not-ours <path>]... [--ack-runtime <seq>]... --reason \"<vì sao>\"\n" +
         "                            [--report tasks/{task}/reports/{yymmdd-hhmm}-{type}-{slug}.md]\n" +
-        "exit: 0 = được report | 1 = còn job chưa xong | 2 = vi phạm phạm vi ghi | 3 = cả 1 và 2",
+        "exit: 0 = được report | 1 = còn job chưa xong hoặc runtime lệch evidence | 2 = vi phạm phạm vi ghi | 3 = cả 1 và 2",
       );
       process.exit(2);
     }
@@ -538,8 +592,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (!Number.isFinite(graceMs) || graceMs < 0) throw new Error(`--grace cần số ms ≥ 0, nhận "${opts.values.get("--grace")}"`);
     }
     const notOurs = opts.lists.get("--not-ours") ?? [];
+    const ackRuntime = (opts.lists.get("--ack-runtime") ?? []).map((v) => {
+      const seq = Number(v);
+      if (!Number.isInteger(seq)) throw new Error(`--ack-runtime cần số seq, nhận "${v}"`);
+      return seq;
+    });
     const r = collectRun(manifestPath, {
-      graceMs, dryRun, notOurs, reason: opts.values.get("--reason") ?? null,
+      graceMs, dryRun, notOurs, ackRuntime, reason: opts.values.get("--reason") ?? null,
     });
     report(r);
     if (opts.values.has("--report")) {

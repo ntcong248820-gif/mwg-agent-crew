@@ -182,6 +182,31 @@ export function updateManifest(manifestPath, mutate) {
  */
 export const MAX_DEPTH = 1;
 
+/**
+ * Run-shape ceilings from mwg-agent-crew/cost-gate.md. They were written in
+ * SKILL.md and nowhere else, so nothing stopped a dispatcher from adding a
+ * seventh job or firing a fourth adapter -- and the dispatcher is the one
+ * process no guard was watching.
+ */
+export const MAX_JOBS = 6;
+export const MAX_PARALLEL = 3;
+
+/**
+ * How long a `running` job keeps holding its parallel slot.
+ *
+ * An adapter that dies without recording leaves `running` in the manifest
+ * forever. Counting those against MAX_PARALLEL would let three corpses close
+ * the run to all further work, so a slot is released once the job is past its
+ * own timeout plus a grace. That is a release, not a verdict: the job stays
+ * `running` and crew-reconcile is still the thing that judges it.
+ *
+ * The number is duplicated from crew-collect rather than imported because this
+ * module is the bottom layer and importing upward would make a manifest test
+ * drag in the whole gate.
+ */
+const SLOT_STALE_GRACE_MS = 10 * 60_000;
+const SLOT_FALLBACK_SPAN_MS = 35 * 60_000;
+
 export function createRun({ runDir, runId, task, workspace, depth = 0, dispatcher = "claude" }) {
   const manifestPath = join(runDir, "manifest.json");
   if (existsSync(manifestPath)) {
@@ -367,6 +392,12 @@ function assertEvidencePath(evidence) {
 export function addJob(manifestPath, job) {
   let added;
   updateManifest(manifestPath, (m) => {
+    if (m.jobs.length >= MAX_JOBS) {
+      throw new ManifestError(
+        `run already has ${m.jobs.length} jobs (max ${MAX_JOBS})\n` +
+        "  → split the work across runs; a run nobody can hold in their head is a run nobody checks",
+      );
+    }
     const seq = m.jobs.length + 1;
     const { role, transport } = resolveRouting(job);
     assertEvidencePath(job.evidence);
@@ -524,6 +555,47 @@ export function updateJob(manifestPath, seq, patch) {
  * headless is worse than no record at all. Version-gated for the usual reason:
  * a manifest written before `transport` existed cannot be asked about it.
  */
+/**
+ * Marks a job `running` and takes one of the run's parallel slots, or refuses.
+ *
+ * This replaces a plain `updateJob({status:"running"})` in both adapters so the
+ * count happens inside the manifest lock. Counting outside it does not work:
+ * three adapters start within milliseconds of each other, all read "2 running",
+ * and all four proceed.
+ */
+export function claimRunSlot(manifestPath, seq, { startedAt, timeoutMs }) {
+  let claimed;
+  updateManifest(manifestPath, (m) => {
+    const job = m.jobs.find((j) => j.seq === seq);
+    if (!job) throw new ManifestError(`no job ${seq} in ${manifestPath}`);
+    if (job.status === "running") {
+      throw new ManifestError(
+        `job ${seq} is already recorded as running\n` +
+        "  → it is being dispatched twice; the second adapter would overwrite the first one's trail",
+      );
+    }
+    const now = Date.now();
+    const live = m.jobs.filter((j) => {
+      if (j.seq === seq || j.status !== "running") return false;
+      if (!j.startedAt) return true;
+      const span = (j.timeoutMs ?? SLOT_FALLBACK_SPAN_MS) + SLOT_STALE_GRACE_MS;
+      return now - Date.parse(j.startedAt) < span;
+    });
+    if (live.length >= MAX_PARALLEL) {
+      throw new ManifestError(
+        `${live.length} jobs already running (max ${MAX_PARALLEL}): ${live.map((j) => j.seq).join(", ")}\n` +
+        "  → wait for one to finish; if one of those is a corpse, run crew-reconcile first",
+      );
+    }
+    job.status = "running";
+    job.startedAt = startedAt;
+    job.timeoutMs = timeoutMs;
+    claimed = job;
+    return m;
+  });
+  return claimed;
+}
+
 export function assertTransport(manifestPath, seq, mode) {
   const manifest = readManifest(manifestPath);
   if (!(manifest.version >= 3)) return null;

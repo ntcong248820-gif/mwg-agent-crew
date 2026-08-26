@@ -14,6 +14,21 @@ import { join, resolve, sep } from "node:path";
 export const DEFAULT_TIMEOUT = "15m";
 export const MAX_TIMEOUT_MS = 30 * 60_000;
 
+/**
+ * The brief ceiling, in bytes of UTF-8.
+ *
+ * The rule ("brief nói WHAT + NEED, không nói HOW") lived only in
+ * worker-brief.md, and prose is a rule the dispatcher drifts on: of the 24
+ * briefs written after the rule landed, 23 were under the cap and one was 2227
+ * bytes -- written by the dispatcher who had just criticised long briefs. A
+ * ceiling nothing measures is a preference.
+ *
+ * There is deliberately no override flag. An escape hatch the caller can flip
+ * in the same breath is the same shape as the manifest guards that validated a
+ * field and then let `extra` overwrite it. Over the cap means cut the HOW.
+ */
+export const MAX_BRIEF_BYTES = 2048;
+
 export class GuardError extends Error {
   constructor(message, detail) {
     super(detail ? `${message}\n  ${detail}` : message);
@@ -136,10 +151,23 @@ export function readPrompt({ prompt, promptFile }) {
     if (!existsSync(abs)) throw new GuardError(`no prompt file at ${abs}`);
     const text = readFileSync(abs, "utf8").trim();
     if (!text) throw new GuardError(`prompt file ${abs} is empty`);
-    return text;
+    return assertBriefFits(text, abs);
   }
   const text = (prompt ?? "").trim();
   if (!text) throw new GuardError("--prompt or --prompt-file is required");
+  return assertBriefFits(text, "--prompt");
+}
+
+/** Measured in bytes, not characters: Vietnamese briefs run ~1.15 bytes/char. */
+function assertBriefFits(text, where) {
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_BRIEF_BYTES) {
+    throw new GuardError(
+      `brief is ${bytes} bytes, over the ${MAX_BRIEF_BYTES}-byte ceiling (${where})`,
+      "cut the HOW: the worker reads the files and its own SKILL.md, so a brief\n" +
+      "  only needs what it cannot derive from those -- what, why, acceptance, traps",
+    );
+  }
   return text;
 }
 

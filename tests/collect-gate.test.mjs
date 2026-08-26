@@ -183,7 +183,41 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   const r = collectRun(manifestPath, { workspace: ws });
   t.check("a runtime that disagreed still passes on evidence", r.rows[0].verdict, "PASS");
   t.check("...but is flagged for a human", r.rows[0].flags.join(","), "WARN");
-  t.check("...without blocking the report", r.exitCode, 0);
+  // Was exit 0 until 26/08. The adapter exits 3 on this event -- "a human has
+  // to read this" -- while the gate called the same run clean and let the
+  // report be written. Two answers to one event, and only one of them stopped
+  // anything. The job's verdict does not move: evidence still outranks the
+  // runtime. What moves is whether the run may be written up unread.
+  t.check("...and the run is not report-able unread", r.exitCode, 1);
+  t.check("...naming the job that has to be read", r.unread.map((x) => x.seq).join(","), "1");
+
+  // Blocking on a fact no rerun can change would be unsatisfiable, and an
+  // unsatisfiable gate is one people route around. The release is a sentence
+  // from a reader, kept on the manifest next to the run it applied to.
+  const acked = collectRun(manifestPath, {
+    workspace: ws, ackRuntime: [1], reason: "đọc evidence, agy báo ERROR nhưng bài đã ghi đủ",
+  });
+  t.check("an acknowledged disagreement unblocks", acked.exitCode, 0);
+  t.check("...and stays flagged for the next reader", acked.rows[0].flags.join(","), "WARN");
+  t.check("...with the reason on the manifest", readManifest(manifestPath).runtimeAcks[0].reason,
+    "đọc evidence, agy báo ERROR nhưng bài đã ghi đủ");
+
+  // An ack without a reason is the same hole as a dismissal without one.
+  const bare = (() => { try { collectRun(manifestPath, { workspace: ws, ackRuntime: [2] }); return null; }
+    catch (err) { return err.message; } })();
+  t.check("an ack with no reason is refused", /cần --reason/.test(bare ?? ""), true);
+}
+
+// --- a manifest that recorded failure is the same class ---------------------
+{
+  // reconcile writes `disagreement` when the manifest said one thing and the
+  // evidence says another. Same event as runtimeVerdict, same gate.
+  const { ws, manifestPath } = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE, status: "failed", patch: { failure: "adapter chết" } }],
+  });
+  const r = collectRun(manifestPath, { workspace: ws });
+  t.check("a manifest that said failed also blocks unread", r.exitCode, 1);
+  t.check("...on the same job", r.unread.length, 1);
 }
 
 // --- reconcile runs first, so a stale manifest cannot fail a done job ----
