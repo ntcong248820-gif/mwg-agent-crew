@@ -202,6 +202,24 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   t.check("...with the reason on the manifest", readManifest(manifestPath).runtimeAcks[0].reason,
     "đọc evidence, agy báo ERROR nhưng bài đã ghi đủ");
 
+  // Found by a crew job on 26/08. An ack keyed only by job number could be
+  // filed before anything went wrong; when a disagreement showed up later it
+  // was already covered, and the gate opened on a mismatch nobody had read.
+  const other = newRun({
+    jobs: [{ evidence: join(RUN_REL, "w1.md"), body: DONE }],
+  });
+  const early = (() => { try {
+    collectRun(other.manifestPath, { workspace: other.ws, ackRuntime: [1], reason: "ký trước cho nhanh" });
+    return null;
+  } catch (err) { return err.message; } })();
+  t.check("acking a job with nothing to acknowledge is refused", /chưa có bất đồng runtime/.test(early ?? ""), true);
+
+  // And an ack survives only the disagreement it was written against: the same
+  // job failing a second way is a second thing to read.
+  updateJob(manifestPath, 1, { runtimeVerdict: "codex exited 3 lần thứ hai, lý do khác" });
+  const changed = collectRun(manifestPath, { workspace: ws });
+  t.check("a different disagreement on an acked job blocks again", changed.exitCode, 1);
+
   // An ack without a reason is the same hole as a dismissal without one.
   const bare = (() => { try { collectRun(manifestPath, { workspace: ws, ackRuntime: [2] }); return null; }
     catch (err) { return err.message; } })();

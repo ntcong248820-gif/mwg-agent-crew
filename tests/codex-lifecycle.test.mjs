@@ -15,7 +15,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readdirSync, renameSync } from "node:fs";
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createRun, addJob, readManifest } from "../scripts/crew-manifest.mjs";
+import { createRun, addJob, claimRunSlot, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
 import { FIXTURE_BIN, FIXTURES, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
@@ -368,6 +368,32 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   // gate treats as lost rather than as something an operator has to fix.
   t.check("...with nothing written at the evidence path", existsSync(join(ws, RUN_DIR_REL, "transport-clash", "w.md")), "false");
   t.check("...and the refusal on the record", readManifest(mp).jobs[0].failure.includes("recorded as transport"), "true");
+}
+
+// --- a refused second dispatch must not erase the first one's claim ---------
+{
+  // Found by a crew job on 26/08, the day the parallel cap landed. The direct
+  // test of claimRunSlot proved it refuses a second claim -- and stopped there.
+  // What it could not see is what the ADAPTER does with that refusal: the catch
+  // path recorded the job as `failed`, wiping the first invocation's `running`
+  // state and handing its parallel slot to whoever asked next, while the first
+  // job was still working. The refusal has to survive the refuser.
+  const dir = join(ws, RUN_DIR_REL, "double-dispatch");
+  const { manifestPath: mp } = createRun({ runDir: dir, runId: "dd", task: "t", workspace: ws, depth: 0 });
+  addJob(mp, {
+    worker: "codex", role: "assist", transport: "headless", title: "already mine",
+    evidence: join(RUN_DIR_REL, "double-dispatch", "w.md"),
+  });
+  claimRunSlot(mp, 1, { startedAt: new Date().toISOString(), timeoutMs: 900_000 });
+
+  const second = run({
+    mode: "ok", evidence: join(RUN_DIR_REL, "double-dispatch", "w2.md"),
+    extra: ["--manifest", mp, "--job", "1"],
+  });
+  t.check("a second dispatch of a running job is refused", second.exit, 1);
+  t.check("...saying it is already running", second.stderr.includes("already recorded as running"), "true");
+  t.check("...and the first claim still stands", readManifest(mp).jobs[0].status, "running");
+  t.check("...with no failure written over it", readManifest(mp).jobs[0].failure ?? null, null);
 }
 
 // --- finding the companion, which lives outside this repo -------------------

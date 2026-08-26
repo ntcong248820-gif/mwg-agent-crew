@@ -142,6 +142,37 @@ function compare() {
       }
     }
   }
+  rows.push(...straysAtSurfaceRoot());
+  return rows;
+}
+
+/**
+ * Anything sitting at a surface root that canonical does not own.
+ *
+ * The per-skill walk above only ever descends into directories canonical knows
+ * about, so nothing at the root itself was ever looked at. A crew job on 26/08
+ * found `.codex/skills/seo-log-cv.zip` -- untracked, from 03/08 -- sitting in a
+ * surface the parity check had been calling clean for three weeks. The scan
+ * reads a directory listing; nothing here deletes.
+ */
+function straysAtSurfaceRoot() {
+  const owned = new Set(ownedSkills());
+  const rows = [];
+  for (const surface of TARGETS) {
+    const root = abs(surface);
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      // Only what this repo claims. The surfaces also hold skills installed
+      // from elsewhere, and calling those strays would make the check noise.
+      if (!OWNED_PREFIXES.some((prefix) => entry.name.startsWith(prefix))) continue;
+      if (entry.isDirectory() && owned.has(entry.name)) continue;
+      rows.push({
+        skill: entry.name, surface, file: "", status: "ORPHAN",
+        note: entry.isDirectory() ? "skill dir not in canonical" : "loose file at surface root",
+      });
+    }
+  }
   return rows;
 }
 
@@ -163,7 +194,10 @@ function printSummary(rows) {
   }
   console.log("");
   for (const row of [...bad, ...orphans]) {
-    console.log(`  ${row.status}: ${row.surface}/${row.skill}/${row.file} ${row.note}`);
+    // `file` is empty for a whole-skill row and for a stray at the surface
+    // root; printing the separator anyway rendered a loose file as a directory.
+    const path = [row.surface, row.skill, row.file].filter(Boolean).join("/");
+    console.log(`  ${row.status}: ${path} ${row.note}`);
   }
   console.log(
     `\n${ownedSkills().length} skill × ${TARGETS.length} surface — ` +
