@@ -1,5 +1,13 @@
 # mwg-agent-crew
 
+> **Repo này đã đóng băng (20/10/2026) — không còn cập nhật.**
+> Crew đã chuyển thành plugin Claude Code dùng được ở mọi repo:
+> **[peterpan-digital/agent-crew](https://github.com/peterpan-digital/agent-crew)**.
+>
+> Cài: trong Claude Code gõ `/plugin marketplace add peterpan-digital/agent-crew` rồi
+> `/plugin install agent-crew@agent-crew-marketplace`. Hướng dẫn đầy đủ ở `INSTALL.md` của repo mới.
+> Lịch sử của module này nằm nguyên trong repo mới; nội dung bên dưới giữ lại để tra cứu.
+
 Module điều phối multi-agent cho workspace `mwg-ai-worker`. Claude làm foreman, giao
 việc cho Codex và Antigravity, gom kết quả về một task folder.
 
