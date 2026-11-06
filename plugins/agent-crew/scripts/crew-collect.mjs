@@ -75,8 +75,10 @@ const NEEDS_HUMAN = new Set(["blocked", "needs_context"]);
  * WAIVED and COVERED do not -- each needs an owner's recorded sentence to exist.
  * REPLACED does not either: it needs a reader's recorded sentence and a later job
  * of the same worker that passed on its own (lib/replaced-jobs.mjs).
+ * CONTINUE blocks until a later job resumes its thread; that job then answers
+ * for the work, and the CONTINUE row reads CHAINED (see chainContinued).
  */
-const BLOCKING = new Set(["FAIL", "STALE", "NO_STATUS", "BLOCKED", "NEEDS_HUMAN", "RUNNING", "DEFERRED"]);
+const BLOCKING = new Set(["FAIL", "STALE", "NO_STATUS", "BLOCKED", "NEEDS_HUMAN", "RUNNING", "DEFERRED", "CONTINUE"]);
 
 /**
  * `evidence_path` must be unique per job, compared after resolution. Comparing
@@ -186,7 +188,7 @@ function trailingStatus(lines, i) {
   return lines.slice(i).every((l) => !l.trim() || STATUS_LINE.test(l.trim()));
 }
 /** Only a real verdict line ends a section; "Status: owner đổi cột X" is content. */
-const STATUS_VERDICT = /^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/;
+const STATUS_VERDICT = /^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT|CONTINUE)\b/;
 const EMPTY_SECTION = /^\(?((owner )?không( có)?( thay đổi| đổi)?( gì| nào)?|không có việc gì|none|n\/a|chưa có|-)\)?$/i;
 
 function judgeOne(job, workspace, now, manifestVersion) {
@@ -261,6 +263,17 @@ function judgeOne(job, workspace, now, manifestVersion) {
   if (!read.reported && !substitute) {
     row.verdict = "NO_STATUS";
     row.detail = `evidence có nội dung nhưng thiếu dòng Status: ${job.evidence}`;
+    return row;
+  }
+  // Chưa xong nhưng dừng có trật tự. Không phải FAIL: việc còn đó, thread còn đó.
+  if (status === "continue") {
+    row.verdict = "CONTINUE";
+    if (hasSection(evidence.text, "Handoff")) {
+      row.detail = "chưa xong, có handoff — làm tiếp bằng job mới `--resume <conversationId của job này>`";
+    } else {
+      row.flags.push("HANDOFF THIẾU");
+      row.detail = "chưa xong mà evidence không có mục `## Handoff` — job làm tiếp không biết bắt đầu từ đâu";
+    }
     return row;
   }
   if (NEEDS_HUMAN.has(status)) {
@@ -372,6 +385,7 @@ export function collectRun(manifestPath, { workspace, graceMs, dryRun = false, n
   const ws = workspace ?? manifest.workspace;
 
   const rows = manifest.jobs.map((job) => judgeOne(job, ws, now, manifest.version));
+  chainContinued(rows, manifest.jobs);
   const dupes = duplicateEvidence(manifest);
   // Dismissals carried over from earlier invocations too: a path someone already
   // explained, with the explanation on the record, does not need re-explaining
@@ -817,8 +831,14 @@ function report(r) {
   const waived = r.rows.filter((x) => x.verdict === "WAIVED").length;
   const covered = r.rows.filter((x) => x.verdict === "COVERED").length;
   const replaced = r.rows.filter((x) => x.verdict === "REPLACED").length;
+  const chained = r.rows.filter((x) => x.verdict === "CHAINED").length;
+  const continuing = r.rows.filter((x) => x.verdict === "CONTINUE");
+  if (continuing.length) {
+    console.log(`\nJob CONTINUE: ${continuing.map((x) => x.seq).join(", ")}. Chưa xong, dừng có handoff — làm tiếp bằng job mới`);
+    console.log("  `crew add-job` rồi `crew run <worker> --resume <conversationId của job đó>`; job đó chạy xong thì dòng này thành CHAINED.");
+  }
   const counted = r.rows.length - cancelled;
-  console.log(`\n${pass}/${counted} job đạt${cancelled ? `, ${cancelled} job bỏ có chủ ý` : ""}${waived ? `, ${waived} job owner bỏ (WAIVED)` : ""}${covered ? `, ${covered} job được lượt resume làm tiếp (COVERED)` : ""}${replaced ? `, ${replaced} job hỏng có job khác làm thay (REPLACED)` : ""}${warn ? `, ${warn} job cần đọc mắt (WARN)` : ""} — exit ${r.exitCode}`);
+  console.log(`\n${pass}/${counted} job đạt${cancelled ? `, ${cancelled} job bỏ có chủ ý` : ""}${waived ? `, ${waived} job owner bỏ (WAIVED)` : ""}${covered ? `, ${covered} job được lượt resume làm tiếp (COVERED)` : ""}${replaced ? `, ${replaced} job hỏng có job khác làm thay (REPLACED)` : ""}${chained ? `, ${chained} job dừng có handoff đã được làm tiếp (CHAINED)` : ""}${warn ? `, ${warn} job cần đọc mắt (WARN)` : ""} — exit ${r.exitCode}`);
   if (r.exitCode === 1) console.log("Chưa được viết report tổng: còn job chưa xong, đang chờ quyết định, runtime lệch evidence, hoặc evidence đổi sau khi xong mà chưa ai đọc.");
   if (r.exitCode === 2) console.log("Chưa được viết report tổng: có vi phạm phạm vi ghi, trùng evidence, kho credential bị đổi hoặc holds bị sửa.");
   if (r.exitCode === 3) {
@@ -826,6 +846,25 @@ function report(r) {
     console.log("  (1) còn job chưa xong hoặc đang chờ quyết định;");
     console.log("  (2) có vi phạm phạm vi ghi, trùng evidence, kho credential bị đổi hoặc holds bị sửa.");
     console.log("  Sửa xong một bên vẫn ra exit khác 0; xử cả hai rồi chạy lại.");
+  }
+}
+
+/**
+ * Job CONTINUE mà một job sau trong run đã resume đúng thread của nó (và không
+ * lệch phiên) thì thôi chặn: job sau gánh phần việc còn lại, và dòng của chính
+ * nó chặn nếu nó hỏng. Job resume chưa chạy thì chưa có `resumedFrom`, nên job
+ * CONTINUE vẫn chặn cho tới lúc đó.
+ */
+function chainContinued(rows, jobs) {
+  for (const row of rows) {
+    if (row.verdict !== "CONTINUE") continue;
+    const job = jobs.find((j) => j.seq === row.seq);
+    if (!job?.conversationId) continue;
+    const next = jobs.find((j) => j.seq > job.seq && j.resumedFrom === job.conversationId && !j.resumeMismatch);
+    if (!next) continue;
+    row.verdict = "CHAINED";
+    row.chainedTo = next.seq;
+    row.detail = `làm tiếp ở job ${next.seq}, cùng thread`;
   }
 }
 

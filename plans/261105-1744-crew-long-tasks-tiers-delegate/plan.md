@@ -50,7 +50,7 @@ Trần 30m **mỗi lát** giữ nguyên (an toàn quota, token Google Workspace 
 |---|-------|-----------|--------|--------|
 | 1 | [Codex chỉ headless + sửa doc lệch](./phase-01-codex-headless-only-and-doc-fixes.md) | — | 3h | Completed |
 | 2 | [Bậc model `--tier`](./phase-02-model-tiers.md) | — | 5h | Completed |
-| 3 | [Hạn mềm + handoff (`Status: CONTINUE`)](./phase-03-soft-deadline-and-handoff.md) | — | 1d | Pending |
+| 3 | [Hạn mềm + handoff (`Status: CONTINUE`)](./phase-03-soft-deadline-and-handoff.md) | — | 1d | Completed |
 | 4 | [Chuỗi lát `--chain` có budget](./phase-04-chain-runner.md) | 3 | 1.5d | Pending |
 | 5 | [Giao việc chủ động + release 2.1.0](./phase-05-proactive-delegation-and-release.md) | 1–4 | 5h | Pending |
 
@@ -81,8 +81,8 @@ Thứ tự cook: 1 → 2 → 3 → 4 → 5. Không song song: phase nào cũng s
 
 | Rủi ro | Giảm thiểu |
 |---|---|
-| Worker phớt lờ hạn mềm | Codex headless và Anti app: lượt cứu handoff 3m ở hard timeout. **Anti headless: chỉ có lượt cứu nếu probe dương** — chưa đo, có thể không có |
-| `agy` tự timeout có trả `conversation_id` không — chưa đo | Probe là bước 1 phase 3 và là **cổng**: âm thì Anti headless không có lượt cứu, không được dùng `--chain` cho Anti headless tới khi có đường khác |
+| Worker phớt lờ hạn mềm | Codex headless và Anti app: lượt cứu handoff 3m ở hard timeout. **Anti headless: probe 06/11 dương** — `agy` hết `--print-timeout` exit 3 nhưng vẫn trả `conversation_id`, nên cũng có lượt cứu |
+| `agy` tự timeout có trả `conversation_id` không | Đã đo 06/11 (phase 3 bước 1): **có**. Mới đo ca worker chờ task nền; ca model nghĩ dở giữa lượt chưa đo |
 | Chuỗi đốt quota / worker tự kéo dài | Budget 4h ghi sổ (chạy lại không reset), 8 lát, 16 lát/run, kiểm cơ học handoff, checkpoint Claude mỗi 2 lát, cấm `--workspace-cli` trong chuỗi |
 | Handoff nhiễm chỉ thị đi sang lát sau | Brief lát kế do dispatcher viết; kiểm chữ đòi quyền; checkpoint Claude. Lát resume cùng thread nên không chặn hẳn được — chấp nhận |
 | Gate aggressive giao oan việc nhỏ | Ngưỡng ~10 tool call / 3 file trong lời gate; log `routingLog` để chấm |

@@ -226,3 +226,26 @@ Kết luận: probe dương. JSON cùng hình dạng với Gemini nên adapter h
 tốn bao nhiêu cho mỗi model **chưa đo**: trang quota nằm trong app, CLI không đọc được.
 `thinking_tokens` của `claude-opus-4-6-thinking` báo 0 cho câu một chữ — chưa nói gì về
 việc thật.
+
+### `agy` tự hết `--print-timeout` vẫn trả `conversation_id` — đo 2026-11-06
+
+Câu hỏi (cổng cho lượt cứu handoff của Anti headless): khi `agy` tự cắt ở
+`--print-timeout`, stdout còn JSON có `conversation_id` để gửi tiếp một lượt vào đúng
+conversation đó không.
+
+Lệnh: argv giống `anti-run.mjs` headless (`--add-dir`, `--dangerously-skip-permissions`,
+`--disable-slash-commands`), `--print-timeout 1m`, model `gemini-3.8-flash-low`, brief bắt
+chạy `sleep 100`.
+
+Kết quả: **exit 3** sau 65s. Stdout vẫn là một dòng JSON: `conversation_id`,
+`status: "ERROR"`, `finished_reason: "print_timeout"`, `error` nêu task nền bị giết, kèm
+`usage`. Stderr có `AGY_ERROR: {... "status":"DEADLINE_EXCEEDED","reason":"print_timeout"}`.
+
+Hệ quả:
+- Probe **dương**: Anti headless có lượt cứu được, gửi bằng `--conversation <id>`.
+- `anti-run.mjs` trước đây chỉ parse stdout khi exit 0, nên id của job hết giờ bị bỏ.
+  Phải đọc JSON cả khi exit ≠ 0.
+- Mới đo ca worker đang chờ task nền. Ca model đang nghĩ dở giữa lượt chưa đo.
+- Lệnh tay `agy --output-format json --print-timeout 1m -p "..."` **không** có
+  `--dangerously-skip-permissions` thì lệnh shell bị auto-deny (`denied_actions`), exit 0,
+  `response` rỗng — đúng hình dạng silent-fail đã biết.

@@ -42,5 +42,25 @@ case "$FAKE_MODE" in
     } > "$EV"
     printf '{"status":"SUCCESS","response":"done","duration_seconds":1,"num_turns":1}\n'
     exit 0 ;;
+  print_timeout_handoff|print_timeout_nostatus|print_timeout_noid)
+    # agy cutting a job at its own --print-timeout: exit 3, but the JSON still
+    # carries conversation_id (measured 06/11). The handoff rescue comes back as
+    # `--conversation <id>`; FAKE_RESCUE_MARK records each rescue call.
+    if [[ " $* " == *" --conversation "* ]]; then
+      [ -n "$FAKE_RESCUE_MARK" ] && echo "rescue $*" >> "$FAKE_RESCUE_MARK"
+      if [ "$FAKE_MODE" = "print_timeout_handoff" ]; then
+        printf '\n## Handoff\n### Đã xong\n- a\n### Đang dở\n- b\n### Bước kế tiếp\n- c\n### File đã đụng\nKhông có\n\nStatus: CONTINUE\n' >> "$EV"
+      fi
+      printf '{"status":"SUCCESS","response":"đã ghi handoff","conversation_id":"%s","duration_seconds":1,"num_turns":2}\n' "$CONV"
+      exit 0
+    fi
+    printf 'phần đầu\n' > "$EV"
+    if [ "$FAKE_MODE" = "print_timeout_noid" ]; then
+      printf '{"status":"ERROR","response":"","finished_reason":"print_timeout"}\n'
+    else
+      printf '{"conversation_id":"%s","status":"ERROR","response":"đang chạy","finished_reason":"print_timeout"}\n' "$CONV"
+    fi
+    echo "error: print timeout" >&2
+    exit 3 ;;
   *) echo "fake-agy: unknown FAKE_MODE '$FAKE_MODE'" >&2; exit 99 ;;
 esac

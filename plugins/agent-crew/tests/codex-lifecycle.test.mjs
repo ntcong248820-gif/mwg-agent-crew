@@ -186,6 +186,56 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   t.check("...with nothing written at the evidence path", existsSync(join(ws, RUN_DIR_REL, "legacy-app-pending", "w.md")), "false");
 }
 
+// --- soft deadline and the handoff rescue -----------------------------------
+{
+  // A long job used to end one way at its ceiling: killed, evidence half-written,
+  // thread abandoned. Now the brief names a soft deadline, and a job that still
+  // hits the hard one gets one short turn on the same thread to write a handoff.
+  const brief20 = run({ mode: "briefdump", evidence: join(RUN_DIR_REL, "soft-20m.md"), timeoutSec: 1200 });
+  const body20 = readFileSync(join(ws, RUN_DIR_REL, "soft-20m.md"), "utf8");
+  t.check("a 20m job's brief carries the soft deadline", brief20.exit === 0 && /Hạn mềm \d\d:\d\d/.test(body20), true);
+  t.check("...and the four handoff sections", body20.includes("`### Đang dở`") && body20.includes("Status: CONTINUE"), true);
+  run({ mode: "briefdump", evidence: join(RUN_DIR_REL, "soft-5m.md"), timeoutSec: 300 });
+  t.check("a 5m job's brief has no soft deadline", readFileSync(join(ws, RUN_DIR_REL, "soft-5m.md"), "utf8").includes("Hạn mềm"), false);
+
+  const hang = (name, mode, { idle = "3s", timeoutSec = 4 } = {}) => {
+    const dir = join(ws, RUN_DIR_REL, `rescue-${name}`);
+    const { manifestPath: mp } = createRun({ runDir: dir, runId: `rescue-${name}`, task: "t", workspace: ws, depth: 0 });
+    // One basename per case: the log dir is shared by the run folder, and a
+    // reused name is refused as an earlier run's sidecar before anything runs.
+    const ev = join(RUN_DIR_REL, `rescue-${name}`, `rescue-${name}.md`);
+    addJob(mp, { worker: "codex", role: "owner", title: name, evidence: ev });
+    const mark = join(ws, `rescue-${name}.mark`);
+    const r = run({ mode, evidence: ev, timeoutSec, extra: ["--idle-timeout", idle, "--manifest", mp, "--job", "1"], env: { FAKE_RESCUE_MARK: mark } });
+    const calls = existsSync(mark) ? readFileSync(mark, "utf8").trim().split("\n").filter(Boolean) : [];
+    const evAbs = join(ws, ev);
+    return { r, job: readManifest(mp).jobs[0], calls, evidence: existsSync(evAbs) ? readFileSync(evAbs, "utf8") : null };
+  };
+
+  const ok = hang("ok", "hang_handoff");
+  t.check("hard timeout → rescue → job is continue", ok.r.json?.status, "continue");
+  t.check("...exit 3: someone has to resume it", ok.r.exit, 3);
+  t.check("...rescue ran exactly once, on the same thread", ok.calls.length === 1 && ok.calls[0].includes("resume 01a04169-2763-79d1-9037-6dc85981fad1"), true);
+  t.check("...and was handed the rescue prompt, not the brief", ok.calls[0].includes("exec"), true);
+  t.check("...the manifest records continue and the rescue", `${ok.job.status}|${ok.job.handoffRescue?.ran}|${ok.job.handoffRescue?.ok}`, "continue|true|true");
+  t.check("...the evidence keeps the first part and adds the handoff", ok.evidence.startsWith("phần đầu") && ok.evidence.includes("## Handoff"), true);
+  t.check("...the kill stays on the record", /exceeded/.test(ok.job.killedFor ?? ok.r.json?.killedFor ?? ""), true);
+  t.check("...without a runtime disagreement (the timeout is what CONTINUE means)", Boolean(ok.job.runtimeVerdict), false);
+
+  const stuck = hang("stuck", "hang_rescue_hang");
+  t.check("a rescue that times out itself → failed", `${stuck.r.exit}|${stuck.job.status}`, "1|failed");
+  t.check("...rescue tried once, recorded as not ok", `${stuck.calls.length}|${stuck.job.handoffRescue?.ok}`, "1|false");
+  t.check("...the job was resolved once (one failure line)", stuck.r.stderr.split("\n").filter((l) => l.startsWith("codex-run: the ")).length, 1);
+
+  const bare = hang("bare", "hang_rescue_nostatus");
+  t.check("a rescue that writes no Status → failed as before", `${bare.r.exit}|${bare.job.status}|${bare.calls.length}`, "1|failed|1");
+
+  const idle = hang("idle", "hang_silent", { idle: "2s", timeoutSec: 30 });
+  t.check("an idle kill gets no rescue", idle.calls.length, 0);
+  t.check("...and fails as before, killed for silence", `${idle.job.status}|${/no stdout event/.test(idle.job.failure ?? "")}`, "failed|true");
+  t.check("...with no rescue on the record", `${idle.job.handoffRescue}`, "undefined");
+}
+
 // --- the app transport: a real thread in the Codex app, faked ---------------
 {
   // The fake exists because these shapes cannot be produced on demand by the

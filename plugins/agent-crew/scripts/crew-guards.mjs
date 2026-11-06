@@ -355,25 +355,37 @@ const WORKER_STATUS = {
   DONE_WITH_CONCERNS: "done_with_concerns",
   BLOCKED: "blocked",
   NEEDS_CONTEXT: "needs_context",
+  // Chưa xong, nhưng dừng có trật tự: evidence có `## Handoff` để job sau làm
+  // tiếp trên cùng thread. Không phải thất bại, cũng không phải đạt.
+  CONTINUE: "continue",
 };
 
 export function readWorkerStatus(evidenceAbs) {
   const lines = readFileSync(evidenceAbs, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const verdict = lines[i].match(/^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/)?.[1];
+    const verdict = lines[i].match(/^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT|CONTINUE)\b/)?.[1];
     if (!verdict) continue;
     // The brief hands the worker the literal line
     // `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, so a worker
     // that echoes its own brief -- or pastes the template while reporting that
     // it achieved nothing -- would otherwise be read as DONE. A real verdict
     // names exactly one outcome.
-    const tokens = lines[i].match(/\b(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/g) ?? [];
+    const tokens = lines[i].match(/\b(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT|CONTINUE)\b/g) ?? [];
     if (new Set(tokens).size > 1) continue;
     return { status: WORKER_STATUS[verdict], reported: verdict };
   }
   // No Status line means the worker ignored the contract, so we cannot say the
   // job succeeded -- but the evidence may still be usable. Flag, do not judge.
   return { status: "done_unverified", reported: null };
+}
+
+/** Evidence đã tự phán (có dòng Status) thì không cần lượt cứu handoff. */
+export function evidenceHasStatus(evidenceAbs) {
+  try {
+    return existsSync(evidenceAbs) && statSync(evidenceAbs).size > 0 && readWorkerStatus(evidenceAbs).reported != null;
+  } catch {
+    return false;
+  }
 }
 
 export function readPrompt({ prompt, promptFile }) {
@@ -438,6 +450,49 @@ export const REPORT_LINE = "Owner bảo \"báo Claude\" hoặc \"xong\" → dừ
   + " không cần tìm cách nào khác. Đã ghi Status thì không làm tiếp, không sửa evidence nữa.";
 export const STATUS_LINE = "Dòng cuối evidence file phải là: Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT";
 /**
+ * Bốn mục con của handoff. Cố định để collect kiểm được và để job sau (hay
+ * chuỗi lát) đọc đúng chỗ mà không phải hiểu văn của worker.
+ */
+export const HANDOFF_SECTIONS = "`## Handoff` gồm `### Đã xong`, `### Đang dở`, `### Bước kế tiếp`, `### File đã đụng`";
+
+/** Job ngắn hơn ngưỡng này không có hạn mềm: không đủ chỗ để vừa làm vừa dừng có trật tự. */
+export const SOFT_DEADLINE_MIN_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Hạn mềm: còn `max(5 phút, 15% timeout)` trước hard timeout. Null khi job
+ * ngắn hơn 10 phút. Worker tự dừng ở đây thì không cần lượt cứu.
+ */
+export function softDeadlineAt(startMs, timeoutMs) {
+  if (!(timeoutMs >= SOFT_DEADLINE_MIN_TIMEOUT_MS)) return null;
+  return new Date(startMs + timeoutMs - Math.max(5 * 60_000, 0.15 * timeoutMs));
+}
+
+/** HH:MM theo giờ máy — worker xem giờ bằng `date` trên cùng máy. */
+const clock = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+export function handoffLine(softDeadline) {
+  return `Hạn mềm ${clock(softDeadline)} (giờ máy, xem bằng \`date\`). Kiểm giờ sau mỗi bước lớn; còn dưới 5 phút thì không mở bước lớn mới.`
+    + ` Tới hạn mềm mà chưa xong: dừng, ghi ${HANDOFF_SECTIONS}, rồi dòng cuối \`Status: CONTINUE\`.`
+    + " CONTINUE chỉ dùng khi việc chưa xong và có handoff; xong mà còn lo ngại thì vẫn là DONE_WITH_CONCERNS.";
+}
+
+/**
+ * Lượt cứu khi hết hard timeout mà evidence chưa có Status. Tự đủ nghĩa: job
+ * dưới 10 phút chưa từng nhận dòng hạn mềm, nên không được dựa vào nó.
+ */
+export function handoffRescuePrompt(evidenceRel) {
+  // Đo 06/11 trên job Codex thật: không có câu nguồn, worker ghi tin này vào
+  // `## Thay đổi từ owner`, và collect gắn BRIEF ĐỔI cho một việc owner không hề nói.
+  return "Tin từ crew (không phải owner): hết giờ. Không làm tiếp, không chạy lệnh nào khác."
+    + ` Ghi ngay vào ${evidenceRel} (giữ nguyên phần đã có) mục ${HANDOFF_SECTIONS},`
+    + " rồi dòng cuối `Status: CONTINUE`. Không ghi tin này vào mục `## Thay đổi từ owner`.";
+}
+
+/** Lượt cứu: trần cứng và trần im lặng. Không cấp thêm quyền nào so với job gốc. */
+export const HANDOFF_RESCUE_MS = 3 * 60_000;
+export const HANDOFF_RESCUE_IDLE_MS = 60_000;
+
+/**
  * Phiên chat thay dòng Status: adapter app thoát ngay khi evidence có `Status:`,
  * nên worker chỉ được viết nó khi owner bảo. Bốn mục cố định để Claude tóm tắt
  * phiên mà không phải đọc cả conversation.
@@ -489,7 +544,7 @@ export function costGateLine(workspace) {
   return `Cổng chi phí: KHÔNG tự gọi ${names}. Cần tới thì dừng trước khi gọi, ghi \`Concerns/Blockers: COST_GATE — {tên API}\` và \`Status: BLOCKED\`.`;
 }
 
-export function appendWorkerContract(text, { evidenceAbs, workspace, unsandboxed = false, chat = false, mayModify = [] }) {
+export function appendWorkerContract(text, { evidenceAbs, workspace, unsandboxed = false, chat = false, mayModify = [], softDeadline = null }) {
   const evidenceRel = evidenceAbs.startsWith(workspace + sep)
     ? evidenceAbs.slice(workspace.length + 1)
     : evidenceAbs;
@@ -512,6 +567,8 @@ export function appendWorkerContract(text, { evidenceAbs, workspace, unsandboxed
     OUTSIDE_BRIEF_LINE,
     // CHAT_LINE đã tự dặn "không có gì thì ghi Không có" cho cả 4 mục.
     ...(chat ? [] : [EMPTY_SECTION_LINE]),
+    // Phiên chat chờ owner, không chạy theo đồng hồ của job.
+    ...(softDeadline && !chat ? [handoffLine(softDeadline)] : []),
   ];
   const costLine = costGateLine(workspace);
   if (costLine) lines.push(costLine);

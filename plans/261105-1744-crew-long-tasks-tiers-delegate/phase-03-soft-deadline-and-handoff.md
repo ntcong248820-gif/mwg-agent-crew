@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Hạn mềm + handoff (Status: CONTINUE)"
-status: pending
+status: completed
 priority: P1
 effort: "1d"
 dependencies: []
@@ -57,13 +57,13 @@ Prompt cứu (cố định, tự đủ nghĩa — job dưới 10m chưa từng n
 
 ## Tasks & Steps
 
-1. [ ] **Probe** (tay, `--timeout 1m`): `agy -p --output-format json --print-timeout 1m` với việc dài hơn 1 phút; xem stdout có `conversation_id` không. Ghi kết quả vào `plugins/agent-crew/docs/transport-measurements.md`.
-2. [ ] Parser + contract + collect/reconcile cho `CONTINUE`; test thuần.
-3. [ ] Hạn mềm ở cả 2 adapter.
-4. [ ] Lượt cứu Codex headless (`runHandoffRescue`, seam ở trên) + test fake-codex: resolve đúng 1 lần; lượt cứu hết giờ → `failed`; idle-kill không cứu.
-5. [ ] Lượt cứu Anti app + test harness; Anti headless theo probe.
-6. [ ] Doc.
-7. [ ] Bump `plugin.json` bản vá (2.0.6), owner update plugin, `diff -rq` bản cài với source rỗng.
+1. [x] **Probe** (tay, `--timeout 1m`): `agy -p --output-format json --print-timeout 1m` với việc dài hơn 1 phút; xem stdout có `conversation_id` không. Ghi kết quả vào `plugins/agent-crew/docs/transport-measurements.md`.
+2. [x] Parser + contract + collect/reconcile cho `CONTINUE`; test thuần.
+3. [x] Hạn mềm ở cả 2 adapter.
+4. [x] Lượt cứu Codex headless (`runHandoffRescue`, seam ở trên) + test fake-codex: resolve đúng 1 lần; lượt cứu hết giờ → `failed`; idle-kill không cứu.
+5. [x] Lượt cứu Anti app + test harness; Anti headless theo probe.
+6. [x] Doc.
+7. [x] Bump `plugin.json` bản vá (2.0.6), owner update plugin, `diff -rq` bản cài với source rỗng.
 
 ## Verification
 
@@ -75,3 +75,15 @@ Prompt cứu (cố định, tự đủ nghĩa — job dưới 10m chưa từng n
 - Worker lạm dụng `CONTINUE` thay `DONE_WITH_CONCERNS`: câu contract chỉ cho phép khi chưa xong và có handoff; collect gắn cờ khi thiếu mục.
 - Lượt cứu kéo job thêm 3m: slot nhả sau `timeoutMs + 10m` (`crew-manifest.mjs:673`) vẫn đủ; lượt cứu không mint token Workspace mới.
 - Lượt cứu vẫn là một lượt sống của worker (prompt không ép được): giới hạn 3m, cùng sandbox, không thêm quyền. Chấp nhận.
+
+## Ghi chú khi cook (2026-11-06)
+
+- Probe bước 1 **dương**: `agy` hết `--print-timeout` → exit 3, stdout vẫn có JSON với `conversation_id`, `finished_reason: print_timeout` (ghi ở `docs/transport-measurements.md`). Anti headless có lượt cứu qua `--conversation <id>`, không truyền `--model`. `anti-run` giờ đọc JSON cả khi exit ≠ 0; job fail vẫn ghi `conversationId`.
+- Trần lượt cứu = `min(3m, timeout job)`, im = `min(1m, idle job)`: không dài hơn chính job, và test chạy nhanh mà không cần núm riêng.
+- Lượt cứu Codex tách ra `scripts/codex-handoff-rescue.mjs`; `finish()` thành async, đặt `settled` trước khi await nên resolve đúng 1 lần (test cả ca lượt cứu tự hết giờ).
+- Lượt cứu thành công thì `runtimeOk` = true (timeout chính là nghĩa của CONTINUE), `killedFor` vẫn ghi. Job `continue` ra exit 3 ở cả hai adapter.
+- Collect: ngoài `CONTINUE` và `HANDOFF THIẾU`, thêm `CHAINED` ngay ở phase này: job `CONTINUE` mà job sau trong run có `resumedFrom` = `conversationId` của nó (không `resumeMismatch`) thì thôi chặn. Không có cái này thì run có job CONTINUE không bao giờ qua cổng dù đã làm tiếp. Phase 4 dùng lại (lát nối nhau bằng chính `resumedFrom`).
+- `derive-state.mjs` không đọc trạng thái job nên không sửa; `crew-reconcile` không cần sửa (continue không nằm trong TERMINAL_PASS nên được vá theo evidence như mọi trạng thái khác).
+
+- Kiểm tay (Verification), job Codex thật `--tier light --timeout 3m`, brief đếm 300 lần `sleep 1`: bị cắt ở 3m (89/300 dòng), lượt cứu 32s ghi đủ 4 mục `## Handoff` + `Status: CONTINUE`; sổ `status: continue`, `handoffRescue {ran, ok: true, durationSec: 32}`, adapter exit 3; collect ra `CONTINUE`. Phát hiện: worker chép tin cứu vào `## Thay đổi từ owner` (collect bật BRIEF ĐỔI oan) → prompt cứu giờ nói rõ "Tin từ crew (không phải owner)" và cấm ghi vào mục đó.
+- Bump 2.0.6, cài plugin bằng `claude plugin marketplace update` + `claude plugin update`.

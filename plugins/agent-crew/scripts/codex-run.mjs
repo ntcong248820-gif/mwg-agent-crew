@@ -53,7 +53,12 @@ import {
   workerEnv,
   resolveLogDir,
   jobLayout,
+  softDeadlineAt,
+  handoffRescuePrompt,
+  HANDOFF_RESCUE_MS,
+  HANDOFF_RESCUE_IDLE_MS,
 } from "./crew-guards.mjs";
+import { evidenceHasStatus, runHandoffRescue } from "./codex-handoff-rescue.mjs";
 // Dời sang crew-guards để anti-run dùng chung; giữ export ở đây cho test và nơi gọi cũ.
 export { resolveLogDir };
 
@@ -482,6 +487,8 @@ function prepareRun(options) {
     workspace,
     unsandboxed: sandboxMode !== "workspace-write",
     mayModify: jobFilesMayModify(options),
+    // Tính từ lúc soạn brief, tức là ngay trước khi spawn: worker đọc giờ máy.
+    softDeadline: softDeadlineAt(Date.now(), timeoutMs),
   });
 
   return { workspace, evidenceAbs, promptText, timeout, timeoutMs, effort, logDir, base, sandboxMode, resumeId };
@@ -577,6 +584,9 @@ export async function codexRun(options) {
     let hardTimer = null;
     let exited = null;
     let settled = false;
+    // Only the job's own ceiling earns a handoff rescue. An idle kill means the
+    // process was stuck, and a resumed turn on a stuck thread buys nothing.
+    let timedOut = false;
 
     const elapsed = () => Math.round((Date.now() - startedAt.getTime()) / 1000);
     const heartbeat = (note) => {
@@ -615,13 +625,35 @@ export async function codexRun(options) {
       for (const t of [idleTimer, drainTimer, hardTimer, overall]) if (t) clearTimeout(t);
     };
 
-    const finish = () => {
+    const finish = async () => {
       if (settled) return;
+      // Set before the rescue is awaited: `close` and the drain timer both call
+      // finish, and the second call must not start a second rescue or a second
+      // resolve while the first one is still waiting.
       settled = true;
       clearTimers();
       // Stop waiting on pipes a grandchild may still hold.
       child.stdout.destroy();
       child.stderr.destroy();
+
+      // Cut at the hard timeout with no verdict on disk: one short turn on the
+      // same thread to write `## Handoff` + `Status: CONTINUE`. Never longer
+      // than the job itself was allowed, never quieter than its own watchdog.
+      let handoffRescue = null;
+      if (timedOut && threadId && !evidenceHasStatus(evidenceAbs)) {
+        handoffRescue = await runHandoffRescue({
+          args: buildArgs({
+            workspace, model: options.model, effort, sandboxMode, resumeId: threadId,
+            lastMessagePath: join(logDir, `${base}.codex-handoff-last-message.txt`),
+          }),
+          prompt: handoffRescuePrompt(relative(workspace, evidenceAbs).split(sep).join("/")),
+          workspace,
+          evidenceAbs,
+          stream,
+          hardMs: Math.min(HANDOFF_RESCUE_MS, timeoutMs),
+          idleMs: Math.min(HANDOFF_RESCUE_IDLE_MS, idleMs),
+        });
+      }
 
       const endedAt = new Date().toISOString();
       const code = exited?.code ?? null;
@@ -634,7 +666,9 @@ export async function codexRun(options) {
       // leaves no trace anywhere else. Three lines to make sure codex is not
       // the surface without the check if its behaviour ever moves.
       const resumeMismatch = Boolean(resumeId && threadId && threadId !== resumeId);
-      const runtimeOk = code === 0 && !killedFor && !resumeMismatch;
+      // A rescued job was cut on purpose and then stopped in order: the timeout
+      // is what CONTINUE means, not a runtime disagreeing with the evidence.
+      const runtimeOk = !resumeMismatch && ((code === 0 && !killedFor) || Boolean(handoffRescue?.ok));
       const runtimeDetail = runtimeOk ? null
         : resumeMismatch ? `job xin tiếp thread ${resumeId} nhưng codex chạy ở thread ${threadId}`
           + " — phiên cũ không được nạp"
@@ -652,6 +686,8 @@ export async function codexRun(options) {
           context: `codex run, ${events} stream events, log at ${streamPath}`,
         });
       } catch (err) {
+        // Carried so the failure path still records that a rescue was tried.
+        if (handoffRescue) err.handoffRescue = handoffRescue;
         rejectRun(err);
         return;
       }
@@ -682,6 +718,7 @@ export async function codexRun(options) {
         exitCode: code,
         signal,
         killedFor,
+        handoffRescue: handoffRescue ?? undefined,
         stream: streamPath,
         streamBroken: stream.broken,
         lastMessage: lastMessagePath,
@@ -695,7 +732,10 @@ export async function codexRun(options) {
       idleTimer = setTimeout(() => kill(`no stdout event for ${Math.round(idleMs / 1000)}s`), idleMs);
     };
 
-    const overall = setTimeout(() => kill(`exceeded ${timeout}`), timeoutMs);
+    const overall = setTimeout(() => {
+      timedOut = true;
+      kill(`exceeded ${timeout}`);
+    }, timeoutMs);
     armIdle();
 
     child.stdout.on("data", (chunk) => {
@@ -1361,7 +1401,9 @@ export function needsHuman(result) {
   return Boolean(result.runtimeVerdict)
     || result.status === "done_unverified"
     || result.status === "blocked"
-    || result.status === "needs_context";
+    || result.status === "needs_context"
+    // Not a failure, but not done either: someone has to resume it.
+    || result.status === "continue";
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -1542,6 +1584,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           endedAt: new Date().toISOString(),
           codexVersion: codexVersion(),
           failure: err.message,
+          ...(err.handoffRescue ? { handoffRescue: err.handoffRescue } : {}),
           ...sandboxPatch(),
           ...threadPatch(),
           ...credentialPatch(),
@@ -1592,6 +1635,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         exitCode: result.exitCode,
         signal: result.signal,
         streamEvents: result.streamEvents,
+        handoffRescue: result.handoffRescue,
         // Filled on both transports: headless reads it off the stream's
         // file_change events, app gets it from the companion's result. It is an
         // authorship signal for the write-scope gate, and one-way -- a file

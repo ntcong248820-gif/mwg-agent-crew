@@ -309,7 +309,15 @@ Dispatch nền nghĩa là **exit code chính là cái ping**, nên phải đọc
 | `0` | Job xong, evidence tự phán `DONE`/`DONE_WITH_CONCERNS`, runtime không phản đối | Đi tiếp |
 | `1` | Job fail. Sổ đã có `status: failed` + `failure` | Đọc `failure` rồi quyết retry hay sửa brief |
 | `2` | Job xong nhưng ghi sổ lỗi | `crew reconcile "$MP"`, **không** chạy lại job |
-| `3` | Job xong nhưng **cần người đọc**: runtime bất đồng với evidence, `BLOCKED`, `NEEDS_CONTEXT`, hoặc evidence thiếu dòng `Status:` | Mở evidence ra đọc trước khi kết luận |
+| `3` | Job xong nhưng **cần người đọc**: runtime bất đồng với evidence, `BLOCKED`, `NEEDS_CONTEXT`, `CONTINUE`, hoặc evidence thiếu dòng `Status:` | Mở evidence ra đọc trước khi kết luận. `CONTINUE` = chưa xong, dừng có `## Handoff`: làm tiếp bằng job mới `--resume <conversationId>` |
+
+**Job dài: hạn mềm và handoff.** Job `--timeout` ≥ 10m, adapter tự nối vào brief một **hạn
+mềm** (còn `max(5m, 15%)` trước timeout): tới đó mà chưa xong thì worker dừng, ghi `## Handoff`
+(`### Đã xong`, `### Đang dở`, `### Bước kế tiếp`, `### File đã đụng`) và `Status: CONTINUE`.
+Worker không tự dừng mà bị cắt ở hard timeout thì adapter **cứu một lượt** (≤ 3m, cùng
+thread, cùng quyền) để ghi handoff — Codex headless, Anti headless, Anti app (không áp cho
+phiên chat, không áp khi job bị giết vì im lặng). Sổ ghi `handoffRescue`. Lượt cứu cũng hỏng
+thì job `failed` như cũ, `conversationId` vẫn ghi để resume tay.
 
 **Claude** — tự làm, nhưng **cũng ghi** evidence của job Claude theo đúng format worker
 khác, để bước collect không phải xử lý ngoại lệ.
@@ -370,13 +378,15 @@ crew collect "$MP" --ack-runtime 2 --reason "đọc evidence rồi, agy báo ERR
 | Exit | Nghĩa | Làm gì |
 | --- | --- | --- |
 | 0 | mọi job đạt, không vi phạm phạm vi | được viết report tổng |
-| 1 | còn job `FAIL` / `STALE` / `NO_STATUS` / `BLOCKED` / `NEEDS_HUMAN` / `DEFERRED` / `RUNNING`, **hoặc** có job runtime lệch evidence / evidence đổi sau khi xong chưa ai đọc | **chưa được report** — xử theo bảng verdict trước; ca runtime lệch hay evidence đổi xem `--ack-runtime` ở trên; ca `BLOCKED` vì `COST_GATE` xem mục `crew hold` bên dưới; `BLOCKED` khác thì làm lại bằng job mới rồi `--replaced` như `FAIL` |
+| 1 | còn job `FAIL` / `STALE` / `NO_STATUS` / `BLOCKED` / `NEEDS_HUMAN` / `DEFERRED` / `RUNNING` / `CONTINUE`, **hoặc** có job runtime lệch evidence / evidence đổi sau khi xong chưa ai đọc | **chưa được report** — xử theo bảng verdict trước; ca runtime lệch hay evidence đổi xem `--ack-runtime` ở trên; ca `BLOCKED` vì `COST_GATE` xem mục `crew hold` bên dưới; `BLOCKED` khác thì làm lại bằng job mới rồi `--replaced` như `FAIL` |
 | 2 | trùng evidence, ghi ngoài phạm vi, ghi vào file được bảo vệ, kho credential bị đổi, hoặc holds bị sửa trong lúc job chạy | **chưa được report** — đọc danh sách file, sửa nguyên nhân |
 | 3 | **cả 1 và 2** — không phải "nặng hơn 2" | **chưa được report** — xử cả hai; sửa một bên vẫn ra exit khác 0 |
 
 **Gate exit khác 0 hoặc có `WARN` → đọc `references/nghiem-thu-chi-tiet.md`** (bảng verdict
 đầy đủ). Hay gặp: `PASS + WARN` đọc evidence bằng mắt; `RUNNING` chờ rồi collect lại;
-`SCOPE_VIOLATION` khai `--allow` lúc `add-job` hoặc `--not-ours <path> --reason "..."`.
+`SCOPE_VIOLATION` khai `--allow` lúc `add-job` hoặc `--not-ours <path> --reason "..."`;
+`CONTINUE` bắn job mới `--resume <conversationId>` của job đó — job đó chạy xong thì dòng cũ
+thành `CHAINED` (không chặn) và job mới tự chịu verdict của nó.
 
 `--abandon` chỉ bỏ job `STALE`. Job `failed` đã có job sau cùng worker làm lại và
 PASS: đọc evidence job đó rồi `--replaced {hỏng}={thay}`.

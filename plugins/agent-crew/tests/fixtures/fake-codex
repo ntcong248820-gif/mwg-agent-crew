@@ -79,5 +79,27 @@ case "$FAKE_MODE" in
     printf '{"type":"turn.completed"}\n'
     printf 'did some work and forgot the contract\n' > "$EV"
     exit 0 ;;
+  hang_handoff|hang_rescue_hang|hang_rescue_nostatus|hang_silent)
+    # A job that runs past its timeout. The first call works forever (emitting
+    # events so the idle watchdog stays quiet); the handoff rescue arrives as
+    # `exec ... resume <id>`, and what it does depends on the mode.
+    # FAKE_RESCUE_MARK records each rescue call, so "no rescue" is observable.
+    if [[ " $* " == *" resume "* ]]; then
+      [ -n "$FAKE_RESCUE_MARK" ] && echo "rescue $*" >> "$FAKE_RESCUE_MARK"
+      cat > /dev/null
+      case "$FAKE_MODE" in
+        hang_handoff)
+          printf '{"type":"turn.completed"}\n'
+          printf '\n## Handoff\n### Đã xong\n- bước 1\n### Đang dở\n- bước 2\n### Bước kế tiếp\n- làm nốt bước 2\n### File đã đụng\nKhông có\n\nStatus: CONTINUE\n' >> "$EV"
+          exit 0 ;;
+        hang_rescue_hang) exec sleep 60 ;;
+        hang_rescue_nostatus) printf '{"type":"turn.completed"}\n'; exit 0 ;;
+      esac
+    fi
+    cat > /dev/null
+    printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD_ID:-01a04169-2763-79d1-9037-6dc85981fad1}"
+    printf 'phần đầu của việc\n' > "$EV"
+    if [ "$FAKE_MODE" = "hang_silent" ]; then exec sleep 60; fi
+    while :; do printf '{"type":"item.updated"}\n'; sleep 1; done ;;
   *) echo "fake-codex: unknown FAKE_MODE '$FAKE_MODE'" >&2; exit 99 ;;
 esac
