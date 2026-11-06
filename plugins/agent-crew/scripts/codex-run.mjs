@@ -58,6 +58,8 @@ import {
   codexTurnUsage,
 } from "./crew-guards.mjs";
 import { evidenceHasStatus, runHandoffRescue } from "./codex-handoff-rescue.mjs";
+import { loadCrewConfig } from "./lib/crew-config.mjs";
+import { assertAccount, listWorkspaceProfiles, resolveWorkspaceProfile, tokenEmail } from "./lib/workspace-cli-profile.mjs";
 // Dời sang crew-guards để anti-run dùng chung; giữ export ở đây cho test và nơi gọi cũ.
 export { resolveLogDir };
 
@@ -87,7 +89,7 @@ const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "m
 const KNOWN_FLAGS = new Set([
   "prompt", "promptFile", "evidence", "workspace", "timeout", "idle",
   "model", "effort", "manifest", "job", "mode", "workspaceCli", "sandboxMode",
-  "resume",
+  "resume", "workspaceProfile",
 ]);
 
 /** `--workspace-cli` is opt-in: most jobs have no business holding a live token. */
@@ -150,14 +152,30 @@ function resolveSandboxMode(options) {
 }
 
 /**
- * Where the Workspace CLI credential store lives.
+ * The profile directory a `--workspace-cli on` job mints from, plus the account
+ * crew.config.json expects it to be.
  *
- * Re-exported from crew-guards rather than recomputed: this file used to carry
- * its own copy of the same expression, and the guard that fingerprints the
- * store has to watch the directory the token is actually minted from. Two
- * copies drift, and the drift is silent.
+ * One function for both the mint and the credential guard: the guard has to
+ * fingerprint the directory the token actually came from, and two copies of the
+ * choice drift silently -- which is how a two-profile machine minted from the
+ * default profile while the worker used the other one (07/11).
  */
-const WORKSPACE_CLI_CONFIG_DIR = CREDENTIAL_STORE_DIR;
+export function workspaceProfileFor(options) {
+  const workspace = resolve(options.workspace ?? process.cwd());
+  let config;
+  try {
+    config = loadCrewConfig(workspace);
+  } catch (err) {
+    throw new CodexRunError(`crew.config.json: ${err.message}`);
+  }
+  let picked;
+  try {
+    picked = resolveWorkspaceProfile({ flag: options.workspaceProfile, configDir: config.workspaceCliConfigDir });
+  } catch (err) {
+    throw new CodexRunError(err.message);
+  }
+  return { ...picked, expected: config.workspaceCliAccount };
+}
 
 /**
  * Mints a short-lived Workspace access token for a job that asked for one.
@@ -178,12 +196,12 @@ const WORKSPACE_CLI_CONFIG_DIR = CREDENTIAL_STORE_DIR;
  * nor races the other jobs. The crew ceiling is 30m (MAX_TIMEOUT_MS), well
  * inside that hour, which is why there is no expiry handling here.
  */
-async function mintWorkspaceToken() {
+async function mintWorkspaceToken(profileDir) {
   let creds;
   try {
     const raw = execFileSync("gws", ["auth", "export", "--unmasked"], {
       encoding: "utf8",
-      env: { ...process.env, GOOGLE_WORKSPACE_CLI_CONFIG_DIR: WORKSPACE_CLI_CONFIG_DIR },
+      env: { ...process.env, GOOGLE_WORKSPACE_CLI_CONFIG_DIR: profileDir },
       timeout: 30_000,
     });
     // The CLI prints "Using keyring backend: ..." ahead of the JSON.
@@ -411,6 +429,12 @@ function prepareRun(options) {
   // behind it, nor a log directory for a job that never ran.
   const sandboxMode = resolveSandboxMode(options);
 
+  // A profile names where the token comes from; without a token it would change
+  // nothing, and a flag that silently does nothing is read as one that worked.
+  if (options.workspaceProfile !== undefined && !resolveWorkspaceCli(options)) {
+    throw new CodexRunError("--workspace-profile chỉ có nghĩa khi kèm --workspace-cli on");
+  }
+
   // A worker may not raise its own ceiling. The crew already refuses to let a
   // worker dispatch another worker (MWG_CREW_ROLE + manifest depth); a worker
   // handing itself full machine access is the same escalation by a shorter
@@ -484,7 +508,30 @@ export async function codexRun(options) {
   // it has no way to read as "the dispatcher could not authenticate".
   const extraEnv = {};
   if (resolveWorkspaceCli(options)) {
-    extraEnv.GOOGLE_WORKSPACE_CLI_TOKEN = await mintWorkspaceToken();
+    const { dir, source, expected } = workspaceProfileFor(options);
+    const shown = displayCredentialDir(dir);
+    const token = await mintWorkspaceToken(dir);
+    const email = await tokenEmail(token);
+    let verified;
+    try {
+      ({ verified } = assertAccount({ expected, actual: email, dir: shown }));
+    } catch (err) {
+      throw new CodexRunError(err.message);
+    }
+    // The worker gets the same directory, so its CLI reads the profile the token
+    // came from; the token env outranks that profile's cache, so nothing in it
+    // needs a refresh -- the write the sandbox refuses never happens.
+    extraEnv.GOOGLE_WORKSPACE_CLI_TOKEN = token;
+    extraEnv.GOOGLE_WORKSPACE_CLI_CONFIG_DIR = dir;
+    console.error(`codex-run: workspace-cli dùng hồ sơ ${shown} (${source}), tài khoản ${email ?? "không đọc được"}`);
+    const profiles = listWorkspaceProfiles();
+    if (!expected && profiles.length > 1) {
+      console.error(
+        `codex-run: máy có ${profiles.length} hồ sơ gws (${profiles.map((d) => displayCredentialDir(d)).join(", ")}) — `
+        + "khai workspaceCliAccount trong crew.config.json để crew chặn job khi chọn nhầm tài khoản",
+      );
+    }
+    options.onWorkspaceProfile?.({ workspaceProfile: shown, workspaceAccountVerified: verified });
   }
 
   const streamPath = join(logDir, `${base}.codex-stream.jsonl`);
@@ -773,7 +820,7 @@ export function parseArgv(argv) {
   const out = {};
   const alias = {
     "prompt-file": "promptFile", "idle-timeout": "idle",
-    "workspace-cli": "workspaceCli", "sandbox-mode": "sandboxMode",
+    "workspace-cli": "workspaceCli", "sandbox-mode": "sandboxMode", "workspace-profile": "workspaceProfile",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -815,7 +862,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // two files never change during a healthy job, so a difference is an incident
   // rather than a warning -- which is why this needs no attribution logic and
   // stays correct with three jobs running at once.
-  const credentialsBefore = snapshotCredentialStore();
+  let credentialDir = CREDENTIAL_STORE_DIR;
+  let credentialsBefore = snapshotCredentialStore(credentialDir);
   /**
    * The credential finding, as a patch fragment to spread into updateJob.
    *
@@ -850,6 +898,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   let sandboxMode = null;
   const sandboxPatch = () => (sandboxMode ? { sandboxMode } : {});
 
+  // Which profile and whether its account was checked: the first two questions
+  // after a wrong-account incident, so recorded on every way out like the rest.
+  let workspaceInfo = null;
+  const workspacePatch = () => workspaceInfo ?? {};
+
   // Same reasoning as sandboxMode, for the same population of jobs: a killed or
   // crashed run builds no result, so without this the one job anybody would
   // want to continue is the one whose session id was thrown away.
@@ -857,9 +910,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const threadPatch = () => (threadId ? { conversationId: threadId } : {});
 
   const credentialPatch = () => {
-    const dir = displayCredentialDir();
+    const dir = displayCredentialDir(credentialDir);
     if (isWatchBlind(credentialsBefore)) return { credentialWatch: `blind:${dir}` };
-    const changes = diffCredentialStore(credentialsBefore, snapshotCredentialStore());
+    const changes = diffCredentialStore(credentialsBefore, snapshotCredentialStore(credentialDir));
     return changes.length ? { credentialTamper: changes.map((c) => ({ ...c, dir })) } : {};
   };
 
@@ -889,6 +942,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           endedAt: new Date().toISOString(),
           failure: `adapter nhận ${name} trước khi job kết thúc`,
           ...sandboxPatch(),
+          ...workspacePatch(),
           ...threadPatch(),
           // A job killed mid-flight is the most suspect one there is; skipping
           // the check here would leave exactly that group unexamined.
@@ -916,6 +970,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     mode = opts.mode ?? "headless";
     if (!MODES.has(mode)) {
       throw new CodexRunError(`unknown mode "${mode}"`, "use --mode headless");
+    }
+    // The guard watches the profile this job will mint from, re-taken before
+    // anything spawns; the snapshot above only covered the default directory.
+    if (opts.workspaceCli === "on") {
+      credentialDir = workspaceProfileFor(opts).dir;
+      credentialsBefore = snapshotCredentialStore(credentialDir);
     }
     // Recorded before the job spawns, not after it returns. A job that is still
     // working has no result to write, so without this the manifest showed it as
@@ -961,7 +1021,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Set before dispatch so the failure paths above already have it. An absent
     // field then means only one thing -- a job from before this field existed.
     sandboxMode = resolveSandboxMode(opts);
-    result = await codexRun({ ...opts, onThreadId: (id) => { threadId = id; } });
+    result = await codexRun({
+      ...opts,
+      onThreadId: (id) => { threadId = id; },
+      onWorkspaceProfile: (info) => { workspaceInfo = info; },
+    });
   } catch (err) {
     // The whole point of this adapter: a death nobody records reads as "pending"
     // forever, which is exactly what happened on 2026-08-24.
@@ -980,6 +1044,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           failure: err.message,
           ...(err.handoffRescue ? { handoffRescue: err.handoffRescue } : {}),
           ...sandboxPatch(),
+          ...workspacePatch(),
           ...threadPatch(),
           ...credentialPatch(),
           ...holdsPatch(),
@@ -1036,6 +1101,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // Same fragment the failure paths use, so one job cannot record the
         // level one way when it succeeds and another when it dies.
         ...sandboxPatch(),
+        ...workspacePatch(),
         transportMode: result.mode,
         conversationId: result.conversationId,
         // Which session this job continued, recorded even when the answer is

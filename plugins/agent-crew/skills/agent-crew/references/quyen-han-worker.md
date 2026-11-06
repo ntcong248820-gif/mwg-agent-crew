@@ -25,12 +25,37 @@ không ghi vào kho credential lần nào.
 | Thấy gì | Nghĩa là | Làm gì |
 | --- | --- | --- |
 | `401 authError` + `Operation not permitted` tại `~/.config/gws` | Job thiếu `--workspace-cli on`, token cache hết hạn, sandbox chặn ghi | Thêm cờ rồi chạy lại |
-| `401` mà job **đã có** cờ | Refresh token bị thu hồi, hoặc kho credential hỏng | Owner phải `auth login` lại — worker không tự vá được |
+| `401` + `Operation not permitted` tại `~/.config/gws-<tên>` mà job **đã có** cờ | Máy có nhiều hồ sơ gws: crew mint từ hồ sơ này, worker dùng hồ sơ khác, phải refresh hồ sơ đó trong sandbox | Chọn đúng hồ sơ: `workspaceCliConfigDir` / `--workspace-profile` (mục dưới). **Không** retry, **không** làm mới cache từ shell — chỉ giữ được ~1h |
+| `401` mà job **đã có** cờ, đúng hồ sơ | Refresh token bị thu hồi, hoặc kho credential hỏng | Owner phải `auth login` lại — worker không tự vá được |
+| Adapter từ chối: `hồ sơ … là tài khoản A, không phải B` | Hồ sơ chọn ra không khớp `workspaceCliAccount` | Đổi hồ sơ, đừng sửa email cho khớp |
 | Cổng đỏ `KHO CREDENTIAL BỊ ĐỔI` | `credentials.enc` hoặc `client_secret.json` đã đổi trong lúc job chạy | **Sự cố.** Dừng, kiểm kho, đọc `worker-brief.md` mục Ranh giới trước khi chạy tiếp |
 
 Không bao giờ để worker tự xử `401` bằng đường vòng: đường vòng duy nhất nó nghĩ ra
 (`GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file`) đã **xoá thật** kho credential của owner
 ngày 18/09. Biến đó giờ bị adapter gỡ khỏi env, và kho bị canh bằng hash.
+
+### Máy có nhiều hồ sơ gws — `workspaceCliConfigDir`, `--workspace-profile` (thêm 2026-11-07)
+
+Đo 07/11: máy có `~/.config/gws` (một tài khoản) và `~/.config/gws-personal` (tài khoản
+khác). Dispatcher không đặt `GOOGLE_WORKSPACE_CLI_CONFIG_DIR` nên crew mint từ hồ sơ mặc
+định; worker trỏ CLI sang hồ sơ brief cần, token cache của hồ sơ đó đã hết hạn, refresh
+phải ghi vào `~/.config/gws-personal` → sandbox chặn → `401`. Hai lần retry đều hỏng; một
+lệnh Gmail "qua được" có thể đã chạy bằng tài khoản kia.
+
+Crew chọn hồ sơ theo thứ tự: `--workspace-profile <dir>` của job → `workspaceCliConfigDir`
+trong `crew.config.json` → `GOOGLE_WORKSPACE_CLI_CONFIG_DIR` của dispatcher → `~/.config/gws`.
+Cùng thư mục đó được đưa cho worker, nên CLI của worker đọc đúng hồ sơ token sinh ra và
+không cần refresh gì. Cổng kho credential canh đúng hồ sơ đó.
+
+```json
+{ "workspaceCliConfigDir": "~/.config/gws-personal", "workspaceCliAccount": "you@gmail.com" }
+```
+
+Sau khi mint, adapter hỏi Google token thuộc email nào (userinfo), in ra stderr và ghi
+sổ `workspaceProfile` + `workspaceAccountVerified` (sổ không ghi email). Có
+`workspaceCliAccount` mà email lệch, hoặc không đọc được → **từ chối trước khi spawn**.
+Không khai mà máy có ≥2 hồ sơ thì chỉ cảnh báo. `--workspace-profile` mà thiếu
+`--workspace-cli on` là lỗi, không bị bỏ qua.
 
 **Mặc định `off`, và giữ nguyên vậy.** Token đọc được **toàn bộ** Workspace của owner —
 mail, Drive, Sheets. Job chỉ sửa script thì không có lý do cầm. Bật cho mọi job là đổi

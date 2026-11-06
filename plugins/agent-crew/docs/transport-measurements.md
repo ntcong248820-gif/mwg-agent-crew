@@ -4,6 +4,17 @@ File này **không nạp** khi vận hành. Nó giữ các phép đo đã sinh r
 `routing-table.md` và `references/` của skill điều phối, để lần sau khỏi đo lại hay
 "phát hiện" lại. Luật thì nằm ở các file đó, không ở đây.
 
+## Hai hồ sơ gws trên một máy: crew mint sai hồ sơ (đo 2026-11-07)
+
+Máy có `~/.config/gws` và `~/.config/gws-personal`, hai tài khoản Google khác nhau. Job
+`--workspace-cli on` mint từ hồ sơ mặc định vì dispatcher không đặt
+`GOOGLE_WORKSPACE_CLI_CONFIG_DIR`; worker dùng `gws-personal`, refresh hồ sơ đó cần ghi
+ngoài workspace → Seatbelt chặn → `401`. Sau bản 2.2.2, chạy adapter thật với kho thật và
+worker giả (không gọi model): `--workspace-profile ~/.config/gws-personal` → worker nhận
+token + đúng thư mục hồ sơ, stderr in đúng email; `workspaceCliAccount` khai email kia mà
+chọn `~/.config/gws` → adapter từ chối trước khi spawn, nêu cả hai email. Chưa đo: lệnh
+Drive thật của worker Codex trong sandbox với token bơm + hồ sơ không mặc định.
+
 ## Owner gõ tay trong app Codex: bề mặt thứ tư (đo 2026-09-22)
 
 **Owner tự ngồi gõ trong app Codex là bề mặt THỨ TƯ, khác hẳn** (đo 22/09/2026, owner

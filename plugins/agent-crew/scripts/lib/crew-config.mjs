@@ -11,6 +11,10 @@
  *   delegate         "default" | "aggressive": aggressive = gate gợi ý giao việc
  *                    code/research từ 1 đầu việc, có trigger mặc định
  *                    (default-routing-triggers.mjs) khi repo không khai
+ *   workspaceCliConfigDir  hồ sơ gws mà job `--workspace-cli on` mint token
+ *                    (tuyệt đối hoặc ~/...). Máy có nhiều hồ sơ thì phải khai
+ *   workspaceCliAccount    email mong đợi của token; lệch thì job bị từ chối
+ *                    trước khi spawn — xem workspace-cli-profile.mjs
  *
  * Luật viết bằng lời (task tạo ở đâu, đóng task thế nào, connector nào cấm) nằm
  * ở CLAUDE.md/AGENTS.md của dự án — agent đọc được văn xuôi, hook thì không.
@@ -22,6 +26,7 @@
 import { CONFIG_NAME, LayoutError, assertRelPath, loadLayout, readConfigRaw } from "./crew-layout.mjs";
 import { normalizeModelTiers } from "./model-tiers.mjs";
 import { withDefaultTriggers } from "./default-routing-triggers.mjs";
+import { expandProfileDir } from "./workspace-cli-profile.mjs";
 
 export const DELEGATE_MODES = Object.freeze(["default", "aggressive"]);
 
@@ -112,7 +117,23 @@ export function loadCrewConfig(workspace) {
     redactConfig = raw.redactConfig;
   }
   const modelTiers = normalizeModelTiers(raw.modelTiers, fail);
-  return Object.freeze({ layout, routingTriggers: Object.freeze(routingTriggers), routingLog, costGate: Object.freeze(costGate), redactConfig, modelTiers, delegate });
+  let workspaceCliConfigDir = null;
+  if (raw.workspaceCliConfigDir !== undefined && raw.workspaceCliConfigDir !== null) {
+    // Kept as written (~ form): the expanded path would put the OS username into
+    // every log line that echoes the config.
+    if (!expandProfileDir(raw.workspaceCliConfigDir)) {
+      fail(`workspaceCliConfigDir phải là đường tuyệt đối hoặc bắt đầu bằng ~/: ${JSON.stringify(raw.workspaceCliConfigDir)}`);
+    }
+    workspaceCliConfigDir = raw.workspaceCliConfigDir.trim();
+  }
+  let workspaceCliAccount = null;
+  if (raw.workspaceCliAccount !== undefined && raw.workspaceCliAccount !== null) {
+    if (typeof raw.workspaceCliAccount !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw.workspaceCliAccount.trim())) {
+      fail(`workspaceCliAccount phải là một email: ${JSON.stringify(raw.workspaceCliAccount)}`);
+    }
+    workspaceCliAccount = raw.workspaceCliAccount.trim();
+  }
+  return Object.freeze({ layout, routingTriggers: Object.freeze(routingTriggers), routingLog, costGate: Object.freeze(costGate), redactConfig, modelTiers, delegate, workspaceCliConfigDir, workspaceCliAccount });
 }
 
 /** Prompt có nhắc API tốn tiền nào không (so tên, không phân biệt hoa thường). */

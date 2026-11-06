@@ -6,7 +6,7 @@ when_to_use: "Trigger: giao việc, chia việc, chạy song song, nhờ Codex, 
 category: agent-ops
 keywords: [crew, dispatch, multi-agent, song-song, codex, antigravity, worker]
 metadata:
-  version: "2.2.1"
+  version: "2.2.2"
 ---
 
 # agent-crew
@@ -299,7 +299,7 @@ thì `crew run codex --resume <conversationId>` (id lấy từ sổ của job tr
 
 | Job cần | Thêm cờ |
 | --- | --- |
-| Google Workspace CLI (Sheet, Drive, Docs, Gmail) | `--workspace-cli on`. Thiếu là `401` → `BLOCKED`; worker **không được** tự vá |
+| Google Workspace CLI (Sheet, Drive, Docs, Gmail) | `--workspace-cli on`. Thiếu là `401` → `BLOCKED`; worker **không được** tự vá. Máy có nhiều hồ sơ gws (`~/.config/gws*`) thì chọn hồ sơ bằng `workspaceCliConfigDir` trong `crew.config.json` hoặc `--workspace-profile <dir>`; khai `workspaceCliAccount` để crew chặn job khi token sai tài khoản |
 | Trình duyệt, Computer Use, ghi ngoài repo | `--sandbox-mode danger-full-access` |
 
 Cả hai mặc định tắt. Anti không cần cờ nào.

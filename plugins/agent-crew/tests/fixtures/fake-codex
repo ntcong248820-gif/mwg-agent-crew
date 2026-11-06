@@ -31,8 +31,10 @@ case "$FAKE_MODE" in
   envdump)      # reports which env vars reached the worker, never their values
     printf '{"type":"turn.completed"}\n'
     {
-      printf 'TOKEN=%s\n' "${GOOGLE_WORKSPACE_CLI_TOKEN:+present}${GOOGLE_WORKSPACE_CLI_TOKEN:-absent}"
-      printf 'KEYRING=%s\n' "${GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND:+present}${GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND:-absent}"
+      # `${V:+present}${V:-absent}` printed the value itself whenever V was set.
+      if [ -n "$GOOGLE_WORKSPACE_CLI_TOKEN" ]; then echo 'TOKEN=present'; else echo 'TOKEN=absent'; fi
+      if [ -n "$GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND" ]; then echo 'KEYRING=present'; else echo 'KEYRING=absent'; fi
+      printf 'PROFILE=%s\n' "${GOOGLE_WORKSPACE_CLI_CONFIG_DIR:-unset}"
       printf 'ROLE=%s\n' "${MWG_CREW_ROLE:-unset}"
       printf '\nStatus: DONE\nSummary: env dumped\n'
     } > "$EV"

@@ -191,7 +191,7 @@ export function loadLayout(workspace) {
 }
 
 /** Khoá không thuộc layout; kiểm ở `crew-config.mjs`. */
-export const RULE_KEYS = Object.freeze(["routingTriggers", "routingLog", "costGate", "redactConfig", "modelTiers", "delegate"]);
+export const RULE_KEYS = Object.freeze(["routingTriggers", "routingLog", "costGate", "redactConfig", "modelTiers", "delegate", "workspaceCliConfigDir", "workspaceCliAccount"]);
 
 /** Mọi khoá `crew.config.json` nhận. */
 export const CONFIG_KEYS = new Set([...LAYOUT_KEYS, ...RULE_KEYS]);
