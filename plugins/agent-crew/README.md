@@ -243,7 +243,7 @@ quyết định của dispatcher, nằm trong brief để audit.
 | --- | --- |
 | `scripts/anti-env.mjs` | Discover runtime của app Antigravity 2.0 (pid, gRPC address, projectId). Không hardcode giá trị nào; app restart thì tự discover lại. |
 | `scripts/anti-run.mjs` | Chạy 1 job Antigravity. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). Ở app mode: ghi `conversationId` ngay khi có, ghi sự kiện `anti.watch` vào sidecar khi conversation im quá `--quiet-warn`/`--quiet-alert` (mặc định 5m/10m, không tự giết job), sự kiện `idle` khi conversation đã `done` hơn 2 phút mà chưa có evidence (trừ phiên chat), `--chat on` mở phiên chat có giám sát cho owner, và bắt SIGTERM để ghi `failed` có kiểm credential. |
-| `scripts/codex-run.mjs` | Chạy 1 job Codex. `--mode headless` (mặc định) qua `codex exec --json`, watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. `--mode app` **bị từ chối từ 2.0.4** (Codex chỉ headless; làm tiếp thread bằng `--resume <conversationId>`), `codexRunApp` còn trong source chờ xoá. Trước đó nó mở thread thật trong app Codex qua companion của plugin, tên `Codex Companion Task: {dòng đầu brief}`. Sau khi settle nó gọi `result <job-id>` để lấy câu trả lời của worker về, ghi cạnh log và trỏ qua `lastMessage` như headless; kèm `companionExitStatus` và `touchedFiles` mà companion tự khai. Chịu được cuộc đua job store ngay sau dispatch (id vừa cấp bị phủ nhận, hoặc job trả về chưa có `status`) trong cửa sổ 45s tính theo đồng hồ, và ghi số lần hỏi lại vào `settleRetries` thay vì nuốt. Log ghi vào `logDir` của layout (mặc định `.crew/logs/{run}/`, nên gitignore) vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest và `crew paths`. |
+| `scripts/codex-run.mjs` | Chạy 1 job Codex. `--mode headless` (mặc định) qua `codex exec --json`, watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. `--mode app` **bị từ chối từ 2.0.4** (Codex chỉ headless; làm tiếp thread bằng `--resume <conversationId>`), code transport app đã xoá ở 2.1.3. Manifest cũ có job Codex `transport: "app"` (kèm `companionJobId`, `settleRetries`…) vẫn được collect/reconcile đọc. Log ghi vào `logDir` của layout (mặc định `.crew/logs/{run}/`, nên gitignore) vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest và `crew paths`. |
 | `scripts/codex-companion-path.mjs` | Tìm `codex-companion.mjs` của plugin Codex (ngoài repo). Env override `MWG_CODEX_COMPANION` là **quyết định cuối** — trỏ sai thì báo lỗi, không dò tiếp sang bản khác. |
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
@@ -287,8 +287,8 @@ Anti app **không** có completion callback, nên `anti-run.mjs` lấy file evid
 tín hiệu hoàn thành (step status là enum không tài liệu, do app sở hữu, và đã từng gọi
 một job xong rồi là "đang chạy" suốt 8 phút).
 
-Codex app (bỏ từ 2.0.4) **có** tín hiệu thật: `status <jobId> --wait` chặn tới khi job settle. Nên
-`codex-run.mjs --mode app` không poll evidence. Trần timeout vẫn giữ riêng, vì `--wait`
+Codex app (bỏ từ 2.0.4, code xoá ở 2.1.3) **từng có** tín hiệu thật: `status <jobId> --wait` chặn tới khi job settle. Nên
+đường đó không poll evidence. Trần timeout vẫn giữ riêng, vì `--wait`
 cũng treo được nếu broker chết — hết trần thì `cancel` rồi mới báo lỗi, để không bỏ lại
 job chạy hoang.
 
@@ -411,7 +411,7 @@ chỉ ra cái chết duy nhất không ai ghi: **của chính adapter**. `SIGTER
 rồi thoát bằng mã `128 + signo`. Ghi đồng bộ, vì trong signal handler không có `await`
 — nên `updateJob` được import tĩnh riêng cho đường này.
 
-**Handler này chỉ với tới đường `headless`.** Đo được khi viết test: đường `app` chờ
+**Handler này chỉ với tới đường `headless`** (ghi chép thời Codex còn transport app; code app đã xoá ở 2.1.3). Đo được khi viết test: đường `app` chờ
 bên trong `spawnSync`, mà `spawnSync` khoá event loop — nên Node không giao được signal
 cho handler nào cho tới khi lệnh đó trả về. Đây là giới hạn thật, không phải chỗ chưa
 làm: job app bị giết giữa lúc chờ được cứu qua **cổng**, và đó chính là lý do
@@ -547,7 +547,7 @@ Ghi hai mốc `atDispatch` / `atSettle` thay vì một, vì reading tự đổi:
 `atDispatch` khoá sau lần ghi đầu (job đầu bắn thắng), `atSettle` ghi đè mọi lần (job cuối
 lắng thắng) — nên 3 adapter chạy song song vẫn cho ra hai field đúng nghĩa.
 
-Chỉ app mode ghi. Headless là `codex exec`, process riêng, không đi qua broker, nên câu hỏi
+Chỉ app mode từng ghi, nên từ 2.1.3 không job mới nào ghi field này; collect vẫn đọc nó ở run cũ. Headless là `codex exec`, process riêng, không đi qua broker, nên câu hỏi
 "chung hay riêng" không tồn tại với nó; lấy reading lúc chạy headless chỉ gán broker của
 session khác cho job đó.
 

@@ -27,7 +27,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, chmodSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { STRIPPED_ENV, stripUnsafeEnv, workerEnv } from "../scripts/crew-guards.mjs";
-import { CODEX_APP_DRIVER, FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const t = makeChecker("workspace-cli-auth");
 const ADAPTER = join(MODULE_ROOT, "scripts", "codex-run.mjs");
@@ -135,18 +135,6 @@ function run({ evidence, extra = [], env = {}, adapter = ADAPTER }) {
   const r = run({ evidence, extra: ["--workspace-cli", "maybe"] });
   t.check("an unknown --workspace-cli value is refused", r.exit !== 0, true);
   t.check("...and says what the allowed values are", /use one of: on, off/.test(r.stderr), true);
-}
-
-{
-  // P6, measured 18/09: the app broker is reused across dispatches, so env
-  // injected at dispatch never reaches the job. Accepting the flag would hand
-  // back a job that looks authorised and 401s anyway.
-  const evidence = join(RUN_DIR_REL, "appmode.md");
-  // The entry refuses Codex app since 2.0.4; the driver still reaches codexRunApp.
-  const r = run({ evidence, adapter: CODEX_APP_DRIVER, extra: ["--mode", "app", "--workspace-cli", "on"] });
-  t.check("app mode refuses the flag outright", r.exit !== 0, true);
-  t.check("...and explains it is the broker, not a typo", /broker is reused/.test(r.stderr), true);
-  t.check("...and points at the transport that does work", /--mode headless/.test(r.stderr), true);
 }
 
 // --- minting, when the credential store cannot answer ----------------------

@@ -50,7 +50,7 @@ Bằng chứng: bản ghi probe stream-json của Anti ngày 25/08 (dữ liệu 
 
 ### `result` của companion — đo 2026-08-25 (bản 1.0.5)
 
-`codex-run.mjs --mode app` giờ gọi `result <job-id>` sau khi job settle. Hình dạng thật:
+`codex-run.mjs --mode app` (xoá ở 2.1.3) từng gọi `result <job-id>` sau khi job settle. Hình dạng thật:
 
 | Field | Là gì |
 | --- | --- |

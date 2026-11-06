@@ -264,8 +264,8 @@ Chưa đo: job treo thật (kẹt prompt permission), và model `pro` nghĩ lâu
 
 Owner chốt 06/11: Codex app không chat tiếp được, không xem live, không watchdog,
 `exitCode: null` — không đáng giữ. Ca duy nhất nó từng che ("làm tiếp buổi sau")
-headless `--resume <conversationId>` làm tốt hơn. `codexRunApp` còn trong source nhưng
-không có cửa vào từ CLI, chờ xoá. Phần dưới giữ lại số đo và luật cũ để đọc run cũ.
+headless `--resume <conversationId>` làm tốt hơn. Code transport app (`codexRunApp`,
+companion, settle-race) đã xoá ở 2.1.3. Phần dưới giữ lại số đo và luật cũ để đọc run cũ.
 
 **Cuộc đua lúc dispatch.** `codex-run.mjs --mode app` từng tự chịu hai hình dạng chết
 oan (`status --wait` không có `status`, `No job found` cho id vừa queue) trong 45s đầu,

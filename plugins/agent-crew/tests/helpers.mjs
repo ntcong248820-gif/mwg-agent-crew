@@ -26,12 +26,6 @@ export const FIXTURES = join(MODULE_ROOT, "tests", "fixtures");
 export const FIXTURE_BIN = join(FIXTURES, "bin");
 
 /**
- * Cửa riêng để test còn chạy được `codexRunApp`: entry codex-run.mjs từ chối
- * `--mode app` từ 2.0.4. Xem chú thích trong file driver.
- */
-export const CODEX_APP_DRIVER = join(FIXTURES, "codex-app-legacy-driver.mjs");
-
-/**
  * Ghi vào sổ một job theo hình dạng `addJob` không còn tạo ra nữa -- hiện chỉ
  * là job Codex transport app -- như run cũ trên đĩa vẫn có. Job đi qua `addJob`
  * dưới transport mặc định để mọi field khác vẫn qua kiểm như thật, rồi transport

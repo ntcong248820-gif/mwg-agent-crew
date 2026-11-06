@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import { resolveResume, GuardError } from "../scripts/crew-guards.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
-import { CODEX_APP_DRIVER, FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const t = makeChecker("resume-gate");
 const CODEX = join(MODULE_ROOT, "scripts", "codex-run.mjs");
@@ -134,17 +134,6 @@ const throwsGuard = (fn) => {
 }
 
 {
-  // Codex app resumes as of Phase 4; only an empty id is refused by the gate.
-  // Driven through the test driver: the entry refuses Codex app since 2.0.4.
-  const evidence = join(RUN_DIR_REL, "codex-app-empty.md");
-  const r = run(CODEX_APP_DRIVER, { evidence, extra: ["--mode", "app", "--resume", ""] });
-  t.check("codex app refuses an empty --resume at the gate",
-    /--resume needs the id/.test(r.stderr), true);
-  t.check("...and spawned nothing", ranNothing(evidence), true);
-  t.check("...and left no sidecar of its own", sidecarsOf(evidence).length, 0);
-}
-
-{
   // Anti headless resumes as of Phase 2, so what is refused here is the
   // COMBINATION, not the surface. The block has to be read carefully: without
   // an `agy` on PATH anti-run dies
@@ -178,17 +167,14 @@ const throwsGuard = (fn) => {
   t.check("...and wrote its evidence", ranNothing(evidence), false);
 }
 
-// --- the same defect, three more flags --------------------------------------
+// --- the same defect, more flags -------------------------------------------
 
 {
   // Found while reviewing the resume gate: each of these parsed cleanly, was
   // read on exactly one branch, and was dropped in silence on the other.
-  // `--idle` is the one that mattered -- it reads as a watchdog, so a
-  // dispatcher passing it on an app job believed a hung worker would be killed.
   const cases = [
     { name: "anti headless --title", adapter: ANTI, extra: ["--title", "x"], flag: "--title" },
     { name: "anti app --agy-mode", adapter: ANTI, extra: ["--mode", "app", "--agy-mode", "plan"], flag: "--agy-mode" },
-    { name: "codex app --idle", adapter: CODEX_APP_DRIVER, extra: ["--mode", "app", "--idle", "5m"], flag: "--idle" },
   ];
   for (const c of cases) {
     const evidence = join(RUN_DIR_REL, `unsupported-${c.flag.replace(/-/g, "")}.md`);
