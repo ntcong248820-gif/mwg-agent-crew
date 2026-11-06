@@ -1,7 +1,7 @@
 ---
 title: "agent-crew: task dài có handoff, bậc model, giao việc chủ động, Codex chỉ headless"
 description: "Cho Codex/Anti tự quản task dài qua chuỗi lát 30 phút có handoff, Claude chọn bậc model bằng một chữ, gate giao việc mạnh tay ở repo chọn, bỏ Codex app."
-status: in-progress
+status: completed
 priority: P1
 effort: "~4.5d"
 branch: feat/crew-long-tasks-tiers-delegate
@@ -52,7 +52,7 @@ Trần 30m **mỗi lát** giữ nguyên (an toàn quota, token Google Workspace 
 | 2 | [Bậc model `--tier`](./phase-02-model-tiers.md) | — | 5h | Completed |
 | 3 | [Hạn mềm + handoff (`Status: CONTINUE`)](./phase-03-soft-deadline-and-handoff.md) | — | 1d | Completed |
 | 4 | [Chuỗi lát `--chain` có budget](./phase-04-chain-runner.md) | 3 | 1.5d | Completed |
-| 5 | [Giao việc chủ động + release 2.1.0](./phase-05-proactive-delegation-and-release.md) | 1–4 | 5h | Pending |
+| 5 | [Giao việc chủ động + release 2.1.0](./phase-05-proactive-delegation-and-release.md) | 1–4 | 5h | Completed (bước 7 chờ owner) |
 
 Thứ tự cook: 1 → 2 → 3 → 4 → 5. Không song song: phase nào cũng sửa `SKILL.md`.
 

@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Giao việc chủ động + release 2.1.0"
-status: in-progress
+status: completed
 priority: P2
 effort: "5h"
 dependencies: [1, 2, 3, 4]
@@ -56,7 +56,7 @@ dependencies: [1, 2, 3, 4]
 3. [x] `crew doctor`/`crew init`.
 4. [x] Sửa `SKILL.md`, playbook, README.
 5. [x] Toàn bộ test: `node plugins/agent-crew/tests/run.mjs`.
-6. [ ] Bump 2.1.0; owner cập nhật plugin trong Claude Code (`/plugin` → update `agent-crew@agent-crew-marketplace`); kiểm `diff -rq` bản cài 2.1.0 với source rỗng (trừ `.in_use`).
+6. [x] Bump 2.1.0; owner cập nhật plugin trong Claude Code (`/plugin` → update `agent-crew@agent-crew-marketplace`); kiểm `diff -rq` bản cài 2.1.0 với source rỗng (trừ `.in_use`).
 7. [ ] Bật thử `delegate: "aggressive"` ở một repo owner chọn; sau ~1 tuần đọc `routingLog` xem tỉ lệ `delegate` bị Claude bỏ qua.
 
 ## Verification
@@ -77,3 +77,4 @@ dependencies: [1, 2, 3, 4]
 - `SKILL.md` `metadata.version` lên 2.1.0 (trước đó kẹt ở 2.0.0 dù plugin đã 2.0.x).
 - Kiểm tay: repo `{"delegate":"aggressive"}` + prompt "refactor module parser cho gọn" → khối "giao việc chủ động"; đổi config `{}` → im.
 - Bước 7 (bật thử ở repo thật, đọc `routingLog` sau ~1 tuần) là việc của owner.
+- Bump 2.1.0, cài bằng `claude plugin marketplace update` + `claude plugin update` (2.0.6 → 2.1.0, bỏ qua cài riêng 2.0.7), `diff -rq` bản cài với source rỗng. Bước 7 còn chờ owner.
