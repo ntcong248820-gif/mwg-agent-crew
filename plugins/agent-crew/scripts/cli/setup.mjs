@@ -12,7 +12,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadCrewConfig } from "../lib/crew-config.mjs";
+import { DELEGATE_MODES, loadCrewConfig } from "../lib/crew-config.mjs";
 import { TIERS, TierError, codexConfigModel, parseAgyModels, resolveTier } from "../lib/model-tiers.mjs";
 import { CONFIG_NAME, DEFAULT_LAYOUT, loadLayout } from "../lib/crew-layout.mjs";
 import { CliError, parseFlags, workspaceRoot } from "./run-commands.mjs";
@@ -84,13 +84,16 @@ export async function doctor(argv, { cwd }) {
 
   let modelTiers = {};
   try {
-    const { layout, routingTriggers, routingLog, costGate, redactConfig, ...rules } = loadCrewConfig(workspace);
+    const { layout, routingTriggers, routingLog, costGate, redactConfig, delegate, ...rules } = loadCrewConfig(workspace);
     modelTiers = rules.modelTiers;
     const custom = existsSync(join(workspace, CONFIG_NAME));
     say("layout", `${custom ? CONFIG_NAME : "mặc định (chưa có crew.config.json)"} — run ở ${layout.runDir}, evidence trong ${layout.evidenceRoot}/`);
     say("routing", routingTriggers.length
       ? `${routingTriggers.length} trigger (${[...new Set(routingTriggers.map((t) => t.kind))].join(", ")})${routingLog ? `, log ${routingLog}` : ""}`
       : "không khai trigger — hook chỉ nói khi owner gõ @anti/@codex");
+    say("delegate", delegate === "aggressive"
+      ? "aggressive — gate gợi ý giao code/research từ 1 đầu việc"
+      : "default — gate chỉ gợi ý khi ≥2 loại đầu việc (bật: crew init --delegate aggressive)");
     say("cost gate", costGate.length ? costGate.map((c) => c.api).join(", ") : "không khai — brief không có dòng cổng chi phí");
     say("redact", !redactConfig
       ? "không khai redactConfig — state phiên/export chỉ che theo hình dạng chung"
@@ -166,8 +169,11 @@ export async function doctor(argv, { cwd }) {
 export function init(argv, { cwd }) {
   let flags;
   try {
-    ({ flags } = parseFlags(argv, ["state"]));
+    ({ flags } = parseFlags(argv, ["state", "delegate"]));
     if (flags.state !== undefined && flags.state !== "on") throw new CliError(`--state chỉ nhận "on", nhận "${flags.state}"`);
+    if (flags.delegate !== undefined && !DELEGATE_MODES.includes(flags.delegate)) {
+      throw new CliError(`--delegate chỉ nhận ${DELEGATE_MODES.join(" | ")}, nhận "${flags.delegate}"`);
+    }
   } catch (err) {
     process.stderr.write(`${err.message}\n`);
     return 2;
@@ -181,6 +187,20 @@ export function init(argv, { cwd }) {
     return 1;
   }
   const created = [];
+  if (flags.delegate !== undefined) {
+    // Ghi đúng một khoá, giữ nguyên mọi khoá khác của config đã có.
+    const path = join(workspace, CONFIG_NAME);
+    let raw = {};
+    try {
+      raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    } catch (err) {
+      process.stderr.write(`${CONFIG_NAME} không đọc được (${err.message}) — sửa tay rồi chạy lại\n`);
+      return 1;
+    }
+    raw.delegate = flags.delegate;
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    created.push(`${CONFIG_NAME} (delegate: ${flags.delegate})`);
+  }
   if (layout.evidenceRoot === DEFAULT_LAYOUT.evidenceRoot) {
     const root = join(workspace, layout.evidenceRoot);
     mkdirSync(root, { recursive: true });
@@ -209,7 +229,7 @@ export function init(argv, { cwd }) {
     "  - công cụ crew KHÔNG được tự gọi (chấm công, đóng task, ghi hệ thống ngoài)",
     "  - skill nào giao Antigravity / Codex / Claude",
     "",
-    `Thứ máy phải đọc (hook, brief) khai ở ${CONFIG_NAME}: routingTriggers, routingLog, costGate, redactConfig.`,
+    `Thứ máy phải đọc (hook, brief) khai ở ${CONFIG_NAME}: routingTriggers, routingLog, costGate, redactConfig, delegate.`,
     "",
   ].join("\n"));
   return 0;

@@ -1,12 +1,12 @@
 ---
 name: agent-crew
-description: "Điều phối nhiều worker làm việc song song: Claude làm việc cần phán đoán, Codex làm code/pipeline, Antigravity làm việc đã có rule sẵn. Nghiệm thu bằng file bằng chứng trên đĩa, không tin lời worker tự khai. Dùng khi 1 request có nhiều đầu việc khác loại, hoặc owner gõ @anti/@codex."
+description: "Điều phối nhiều worker làm việc song song: Claude làm việc cần phán đoán, Codex làm code/pipeline, Antigravity làm việc đã có rule sẵn. Nghiệm thu bằng file bằng chứng trên đĩa, không tin lời worker tự khai. Dùng khi 1 request có nhiều đầu việc khác loại, owner gõ @anti/@codex, hoặc repo bật giao việc chủ động (delegate: aggressive) và có việc code lớn / research."
 user-invocable: true
-when_to_use: "Trigger: giao việc, chia việc, chạy song song, nhờ Codex, nhờ Anti, nhờ Antigravity, @anti, @codex, crew, dispatch, làm nhiều việc cùng lúc."
+when_to_use: "Trigger: giao việc, chia việc, chạy song song, nhờ Codex, nhờ Anti, nhờ Antigravity, @anti, @codex, crew, dispatch, làm nhiều việc cùng lúc, giao việc chủ động, việc code lớn, research, task dài, --chain."
 category: agent-ops
 keywords: [crew, dispatch, multi-agent, song-song, codex, antigravity, worker]
 metadata:
-  version: "2.0.0"
+  version: "2.1.0"
 ---
 
 # agent-crew
@@ -106,11 +106,13 @@ BRIEF_MAX    = 2 KB   # code ép ở adapter
 | Câu hỏi | Nếu đúng |
 | --- | --- |
 | Owner gõ `@anti`/`@codex`, hay chat với worker? | Miễn luật ≥2 đầu việc; đọc `references/phoi-hop-owner.md`. |
+| Repo khai `delegate: "aggressive"` (`crew doctor` dòng `delegate`)? | Miễn luật ≥2 đầu việc cho việc **code** (→ Codex `--role owner --tier code`, ước > 30m thì `--chain`) và **research**/việc có rule (→ Anti `--tier standard`). Tự làm khi ước < ~10 lượt gọi tool **và** < 3 file, hoặc cần quyết nghiệp vụ giữa chừng — nói lý do một câu. |
 | Request chỉ có 1 đầu việc? | Làm trực tiếp. Không tạo run. |
 | Mỗi đầu việc xử lý dưới ~30s? | Gom lại thành 1 job. Mở `agy` tốn 5.5s/lần. |
 | Cần quyết định nghiệp vụ giữa chừng? | Claude tự làm phần đó, không giao đi rồi hỏi lại. |
 
-Chỉ dispatch khi có **≥2 đầu việc khác loại**, mỗi việc viết nổi acceptance riêng.
+Chỉ dispatch khi có **≥2 đầu việc khác loại** (trừ hai ca miễn ở trên), mỗi việc viết nổi
+acceptance riêng.
 Chi tiết cách phân rã: `references/dispatch-playbook.md`.
 
 Hook của plugin có thể đã chèn khối "Định tuyến crew" vào đầu lượt. Đó là **gợi ý từ so

@@ -151,6 +151,24 @@ thêm file rác trong thư mục run.
 
 Một đầu việc, cần phán đoán. Claude tự làm.
 
+## Giao việc chủ động (repo `delegate: "aggressive"`)
+
+Repo bật khoá này (`crew init --delegate aggressive`) là owner muốn đẩy việc khỏi token
+Claude. Hook chèn khối "giao việc chủ động" khi prompt khớp trigger `code`/`research` (mặc
+định ở `scripts/lib/default-routing-triggers.mjs`, repo đè được bằng `routingTriggers` cùng
+`id`). Vẫn là gợi ý: đọc yêu cầu thật rồi quyết.
+
+| Giao | Không giao (tự làm, nói lý do một câu) |
+| --- | --- |
+| "Refactor module parser, tách 3 file, giữ test xanh" → Codex `--tier code` | "Đổi tên biến này cho rõ" — 1 file, vài lượt tool |
+| "Viết test cho toàn bộ `scripts/lib/`" → Codex `--tier code`, ước > 30m thì `--chain` | "Sửa lỗi chính tả trong README" |
+| "So sánh 4 thư viện queue, có nguồn" → Anti `--tier standard` | "Giải thích hàm này chạy sao" — cần đọc code và phán đoán ngay |
+| "Migrate 40 file sang API mới" → Codex `--chain --budget 4h` | "Sửa lỗi này nhưng chưa rõ owner muốn hành vi nào" — cần quyết nghiệp vụ |
+
+Gate chỉ xét **một lần, lúc gửi prompt**. Đang tự làm mà thấy việc đã vượt ngưỡng (quá ~10
+lượt gọi tool hoặc đụng ≥3 file) thì dừng, tự xét lại việc giao phần còn lại cho worker
+thay vì làm nốt bằng token Claude.
+
 ## Thứ tự khi job có phụ thuộc
 
 Job phụ thuộc nhau thì **không** bắn song song. Chạy job trước, nghiệm thu, rồi mới

@@ -15,8 +15,9 @@ Một cửa vào cho mọi script. Cài shim một lần (ghi `~/.local/bin/crew
 
 ```bash
 node plugins/agent-crew/bin/crew.mjs install
-crew doctor          # node, git, layout, agy/codex, tên model còn sống, bậc --tier, transport app
-crew init            # .crew/ + .gitignore cho log thô; --state on để bật file trạng thái phiên
+crew doctor          # node, git, layout, agy/codex, tên model còn sống, bậc --tier, delegate
+crew init            # .crew/ + .gitignore cho log thô; --state on để bật file trạng thái phiên;
+                     # --delegate aggressive để gate gợi ý giao việc code/research chủ động
 ```
 
 Một run, từ đầu tới cuối:
@@ -34,6 +35,11 @@ crew collect "$MP"
 `add-job --tier light|standard|deep|code|claude|claude-max` đổi bậc ra tên `agy models`
 còn sống (Anti) hoặc `--effort` (Codex); `--bump-from <seq>` nâng đúng 1 bậc từ job trước;
 `--model`/`--effort` tay vẫn thắng. `crew doctor` in mỗi bậc đang ra model nào.
+
+Việc dài hơn trần 30m của một job: `crew run codex --manifest "$MP" --job N --prompt-file
+<brief> --chain --timeout 30m --budget 4h` — lát nào ra `Status: CONTINUE` (có `## Handoff`)
+thì crew tự nối lát kế trên cùng thread; exit 4 = checkpoint mỗi 2 lát, đọc handoff rồi gọi
+lại đúng lệnh. Codex chỉ chạy headless (từ 2.0.4); transport `app` chỉ còn cho Antigravity.
 
 `crew --help` liệt kê mọi lệnh. Lệnh nào đã có script thì chạy đúng script đó ở tiến
 trình con, giữ nguyên tham số và exit code; cờ lạ vẫn bị script từ chối.
@@ -103,6 +109,7 @@ thư mục không phải git trước khi bắn job nào.
 | `costGate` | API tính tiền theo lượt gọi. Adapter chèn danh sách vào brief; worker gặp thì dừng, trả `COST_GATE — {api}`; collect tạo hold chờ owner |
 | `routingTriggers` | Regex (không phân biệt hoa thường) trên prompt. Khớp ≥2 `kind` khác nhau → hook gợi ý chia việc; 1 `kind` → gợi ý một job. Trigger khớp tên trong `costGate` bị từ chối lúc nạp |
 | `routingLog` | Nơi hook ghi lượt bắn (`ts, branch, decision, triggers` — không bao giờ ghi prompt). Không khai = không ghi |
+| `delegate` | `"default"` (mặc định) \| `"aggressive"`. Aggressive: 1 đầu việc khớp trigger là hook gợi ý giao (code → Codex, research → Anti) kèm ngưỡng tự làm ~10 lượt tool / 3 file; repo không khai `routingTriggers` thì dùng bộ mặc định `default-code`/`default-research` (`scripts/lib/default-routing-triggers.mjs`), trigger repo cùng `id` đè. Chỉ đổi lời gợi ý, không cấp quyền |
 | `modelTiers` | Ghi đè bảng bậc `--tier` theo bậc: `agy` (mảng regex neo `^...$` trên tên `agy models`), `app` (`flash_lite\|flash\|pro\|inherit`), `effort` (`low\|medium\|high`). Dùng khi nhà cung cấp đổi lược đặt tên. Không khai = bảng mặc định trong `scripts/lib/model-tiers.mjs` |
 | `redactConfig` | File `.json` (nên gitignore) có mục `redact` — `internalDomains`, `internalHosts`, `emailDomains` — cho bộ che của state phiên và export transcript; mọi `<mục>.origin` trong file cũng bị che. Tách file vì đây là phần riêng tư, còn `crew.config.json` thì commit. Không khai = chỉ che theo hình dạng chung |
 
