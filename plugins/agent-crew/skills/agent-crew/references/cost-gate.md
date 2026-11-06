@@ -39,7 +39,7 @@ Hỏi từng lần dispatch thì mất luôn ý nghĩa tự động. Chặn bằ
 | `max_parallel` | **3** | đo 2026-08-18: 3 job song song 16s vs tuần tự 33s, per-job không degrade |
 | `max_jobs_per_run` | **6** | vượt thì báo user, không tự chạy tiếp |
 | `print_timeout_default` | **15m** | mặc định của `agy` là 5m, quá ngắn cho job thật |
-| `print_timeout_max` | **30m** | job cần hơn thì chẻ nhỏ, hoặc nối job `--resume <conversationId>` (job mới tiếp thread cũ, headless) |
+| `print_timeout_max` | **30m** | trần **mỗi lát**; việc cần hơn thì chẻ nhỏ, hoặc `crew run … --chain` (lát `CONTINUE` tự nối trên cùng thread, budget riêng ở các dòng `chain_*`) |
 | `chain_budget_default` | **4h** | `--chain` không khai `--budget`; tính bằng tổng thời gian chạy các lát trong sổ |
 | `chain_budget_max` | **8h** | một chuỗi dài hơn thì chẻ việc, hoặc chuỗi mới sau khi Claude đọc handoff |
 | `chain_slices_max` | **8** | cũng là mặc định `--max-slices` |
