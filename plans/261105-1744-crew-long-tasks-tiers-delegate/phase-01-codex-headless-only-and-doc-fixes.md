@@ -44,7 +44,7 @@ dependencies: []
 5. [x] Sửa 6 file doc ở trên.
 6. [x] Kiểm collect/reconcile một manifest có job Codex app `done` cũ vẫn ra verdict như trước (test trong `collect-gate`).
 7. [x] Test: `node plugins/agent-crew/scripts/codex-run.mjs --mode app ...` không kèm `--manifest` cũng bị từ chối.
-8. [x] Bump 2.0.4. Owner update plugin (`/plugin` → update `agent-crew@agent-crew-marketplace`), `diff -rq` bản cài với source rỗng (trừ `.in_use`) — việc của owner, chưa làm lúc đóng phase.
+8. [x] Bump 2.0.4. Owner update plugin (`/plugin` → update `agent-crew@agent-crew-marketplace`), `diff -rq` bản cài với source rỗng (trừ `.in_use`) — đã làm 06/11 bằng `claude plugin marketplace update` + `claude plugin update`; `diff -rq` rỗng.
 
 ## Ghi chú khi cook (2026-11-06)
 
