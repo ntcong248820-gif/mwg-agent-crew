@@ -15,7 +15,7 @@ Một cửa vào cho mọi script. Cài shim một lần (ghi `~/.local/bin/crew
 
 ```bash
 node plugins/agent-crew/bin/crew.mjs install
-crew doctor          # node, git, layout, agy/codex, tên model còn sống, transport app
+crew doctor          # node, git, layout, agy/codex, tên model còn sống, bậc --tier, transport app
 crew init            # .crew/ + .gitignore cho log thô; --state on để bật file trạng thái phiên
 ```
 
@@ -23,7 +23,7 @@ Một run, từ đầu tới cuối:
 
 ```bash
 MP=$(crew new-run)                                   # layout có task: --task <task>
-crew add-job "$MP" --worker codex --role owner --title "sửa test" --effort medium --allow src/
+crew add-job "$MP" --worker codex --role owner --title "sửa test" --tier code --allow src/
 crew paths "$MP" --job 1                             # brief lưu ở dòng "brief"
 crew run codex --manifest "$MP" --job 1 --prompt-file <brief>
 crew collect "$MP"
@@ -31,6 +31,9 @@ crew collect "$MP"
 
 `crew run --manifest --job` lấy `--evidence`, `--workspace`, `--mode`, `--model`,
 `--effort` từ sổ — đúng cái `add-job` đã ghi, nên không lệch được. Cờ truyền tay thắng.
+`add-job --tier light|standard|deep|code|claude|claude-max` đổi bậc ra tên `agy models`
+còn sống (Anti) hoặc `--effort` (Codex); `--bump-from <seq>` nâng đúng 1 bậc từ job trước;
+`--model`/`--effort` tay vẫn thắng. `crew doctor` in mỗi bậc đang ra model nào.
 
 `crew --help` liệt kê mọi lệnh. Lệnh nào đã có script thì chạy đúng script đó ở tiến
 trình con, giữ nguyên tham số và exit code; cờ lạ vẫn bị script từ chối.
@@ -100,6 +103,7 @@ thư mục không phải git trước khi bắn job nào.
 | `costGate` | API tính tiền theo lượt gọi. Adapter chèn danh sách vào brief; worker gặp thì dừng, trả `COST_GATE — {api}`; collect tạo hold chờ owner |
 | `routingTriggers` | Regex (không phân biệt hoa thường) trên prompt. Khớp ≥2 `kind` khác nhau → hook gợi ý chia việc; 1 `kind` → gợi ý một job. Trigger khớp tên trong `costGate` bị từ chối lúc nạp |
 | `routingLog` | Nơi hook ghi lượt bắn (`ts, branch, decision, triggers` — không bao giờ ghi prompt). Không khai = không ghi |
+| `modelTiers` | Ghi đè bảng bậc `--tier` theo bậc: `agy` (mảng regex neo `^...$` trên tên `agy models`), `app` (`flash_lite\|flash\|pro\|inherit`), `effort` (`low\|medium\|high`). Dùng khi nhà cung cấp đổi lược đặt tên. Không khai = bảng mặc định trong `scripts/lib/model-tiers.mjs` |
 | `redactConfig` | File `.json` (nên gitignore) có mục `redact` — `internalDomains`, `internalHosts`, `emailDomains` — cho bộ che của state phiên và export transcript; mọi `<mục>.origin` trong file cũng bị che. Tách file vì đây là phần riêng tư, còn `crew.config.json` thì commit. Không khai = chỉ che theo hình dạng chung |
 
 Luật viết bằng lời — mục tiêu, cách tạo/đóng task, công cụ không được tự gọi — nằm ở

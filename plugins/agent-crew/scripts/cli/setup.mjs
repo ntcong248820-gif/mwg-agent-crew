@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCrewConfig } from "../lib/crew-config.mjs";
+import { TIERS, TierError, codexConfigModel, parseAgyModels, resolveTier } from "../lib/model-tiers.mjs";
 import { CONFIG_NAME, DEFAULT_LAYOUT, loadLayout } from "../lib/crew-layout.mjs";
 import { CliError, parseFlags, workspaceRoot } from "./run-commands.mjs";
 
@@ -26,19 +27,25 @@ const run = (cmd, args, timeout = 15_000) => {
   return { ok: p.status === 0, out: `${p.stdout ?? ""}`.trim(), err: p.error?.message ?? `${p.stderr ?? ""}`.trim() };
 };
 
-/** Tên model `agy models` còn liệt kê: cột đầu mỗi dòng, bỏ dòng thông báo. */
-export function parseAgyModels(text) {
-  return String(text).split("\n").map((l) => l.split("\t")[0].trim()).filter((s) => /^[a-z0-9][a-z0-9.-]+$/.test(s));
-}
+export { codexConfigModel, parseAgyModels };
 
-/** Model Codex đang đặt trong config máy, hoặc null. */
-export function codexConfigModel(home = homedir()) {
-  try {
-    const m = /^\s*model\s*=\s*"([^"]+)"/m.exec(readFileSync(join(home, ".codex", "config.toml"), "utf8"));
-    return m ? m[1] : null;
-  } catch {
-    return null;
-  }
+/**
+ * Mỗi bậc `--tier` đang ra gì trên máy này: Anti headless (theo `agy models`),
+ * Anti app, Codex. Bậc không khớp thì in lý do, không tính là lỗi của doctor.
+ */
+export function tierTable(names, overrides = {}) {
+  const cell = (args) => {
+    try {
+      const r = resolveTier({ ...args, overrides });
+      return r.effort ? `--effort ${r.effort}` : r.model;
+    } catch (err) {
+      if (!(err instanceof TierError)) throw err;
+      return "—";
+    }
+  };
+  return TIERS.map((tier) => `${tier.padEnd(10)} anti ${cell({ worker: "antigravity", tier, liveAgyModels: names })}` +
+    ` · anti app ${cell({ worker: "antigravity", transport: "app", tier })}` +
+    ` · codex ${cell({ worker: "codex", tier })}`);
 }
 
 /** Slug model trong cache của Codex. Cache liệt kê model của nhà cung cấp, không nói tài khoản này được dùng cái nào. */
@@ -75,8 +82,10 @@ export async function doctor(argv, { cwd }) {
   say("workspace", `${workspace}${inRepo ? "" : " — KHÔNG phải git repo"}`);
   if (!inRepo) problems.push("thư mục này không phải git repo — crew new-run sẽ từ chối (chạy git init)");
 
+  let modelTiers = {};
   try {
-    const { layout, routingTriggers, routingLog, costGate, redactConfig } = loadCrewConfig(workspace);
+    const { layout, routingTriggers, routingLog, costGate, redactConfig, ...rules } = loadCrewConfig(workspace);
+    modelTiers = rules.modelTiers;
     const custom = existsSync(join(workspace, CONFIG_NAME));
     say("layout", `${custom ? CONFIG_NAME : "mặc định (chưa có crew.config.json)"} — run ở ${layout.runDir}, evidence trong ${layout.evidenceRoot}/`);
     say("routing", routingTriggers.length
@@ -94,12 +103,14 @@ export async function doctor(argv, { cwd }) {
   }
 
   const workers = [];
+  let agyNames = [];
   const agy = run("agy", ["--version"]);
   if (agy.ok) {
     workers.push("anti");
     say("agy", agy.out.split("\n")[0]);
     const models = run("agy", ["models"], 30_000);
     const names = models.ok ? parseAgyModels(models.out) : [];
+    agyNames = names;
     say("", names.length ? `model còn sống: ${names.join(", ")}` : `không đọc được \`agy models\`: ${models.err.split("\n")[0]}`);
   } else {
     say("agy", "không có trên PATH — worker Antigravity không chạy được");
@@ -117,13 +128,11 @@ export async function doctor(argv, { cwd }) {
   }
   if (!workers.length) problems.push("không có worker nào: cài agy hoặc codex");
 
-  // Transport app là ngoại lệ có tên, không phải điều kiện: báo, không tính là lỗi.
-  try {
-    const { resolveCompanion } = await import("../codex-companion-path.mjs");
-    say("codex app", `companion ${resolveCompanion()}`);
-  } catch (err) {
-    say("codex app", `không dùng được transport app: ${String(err.message).split("\n")[0]}`);
-  }
+  // Một chữ `--tier` ra model nào trên máy này. "—" là bậc không dành cho đường đó
+  // (hoặc không khớp model còn sống); add-job sẽ báo lý do đầy đủ.
+  tierTable(agyNames, modelTiers).forEach((row, i) => say(i ? "" : "tier", row));
+
+  // Anti app là ngoại lệ có tên, không phải điều kiện: báo, không tính là lỗi.
   try {
     const { resolveAntiEnv } = await import("../anti-env.mjs");
     const env = resolveAntiEnv(workspace);

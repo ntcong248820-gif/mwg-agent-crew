@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Bậc model --tier"
-status: pending
+status: completed
 priority: P1
 effort: "5h"
 dependencies: []
@@ -55,14 +55,14 @@ Bậc `light`–`deep` chỉ khớp Gemini; Claude chỉ qua bậc `claude`/`cla
 
 ## Tasks & Steps
 
-0. [ ] **Probe** (tay): `agy -p --output-format json --model claude-sonnet-4-6 "ghi 'ok' vào /tmp/x"` và tương tự `claude-opus-4-6-thinking`: chạy được headless không, JSON có `usage`/`conversation_id` như model Gemini không, tốn credit Antigravity bao nhiêu so với `flash-medium` (xem trang quota trong app). Ghi vào `plugins/agent-crew/docs/transport-measurements.md`. Probe âm → bỏ 2 bậc Claude khỏi phase, báo owner.
-1. [ ] Viết `model-tiers.mjs` + test thuần (thêm: `claude`/`claude-max` resolve đúng; Anti app hoặc Codex với 2 bậc này → lỗi; `bumpTier("deep")` vẫn là `deep`) (fixture list 06/11; list không có flash-low → `light` báo lỗi, **không** ra flash-medium/high; list có 2 phiên bản flash-medium → lấy bản cao; list rỗng).
-2. [ ] Thêm `modelTiers` vào config loader + test khoá lạ.
-3. [ ] Nối `--tier`/`--bump-from` vào `add-job`; manifest ghi `tier`.
-4. [ ] Job resume: tier vẫn resolve và ghi sổ, nhưng `crew run` không truyền `--model` khi có `--resume` (giữ hành vi `run-commands.mjs:181-184`). Thêm test.
-5. [ ] `crew doctor` in bảng tier.
-6. [ ] Sửa `SKILL.md` + `routing-table.md`.
-7. [ ] Bump `plugin.json` bản vá (2.0.5), owner update plugin, `diff -rq` bản cài với source rỗng.
+0. [x] **Probe** (tay): `agy -p --output-format json --model claude-sonnet-4-6 "ghi 'ok' vào /tmp/x"` và tương tự `claude-opus-4-6-thinking`: chạy được headless không, JSON có `usage`/`conversation_id` như model Gemini không, tốn credit Antigravity bao nhiêu so với `flash-medium` (xem trang quota trong app). Ghi vào `plugins/agent-crew/docs/transport-measurements.md`. Probe âm → bỏ 2 bậc Claude khỏi phase, báo owner.
+1. [x] Viết `model-tiers.mjs` + test thuần (thêm: `claude`/`claude-max` resolve đúng; Anti app hoặc Codex với 2 bậc này → lỗi; `bumpTier("deep")` vẫn là `deep`) (fixture list 06/11; list không có flash-low → `light` báo lỗi, **không** ra flash-medium/high; list có 2 phiên bản flash-medium → lấy bản cao; list rỗng).
+2. [x] Thêm `modelTiers` vào config loader + test khoá lạ.
+3. [x] Nối `--tier`/`--bump-from` vào `add-job`; manifest ghi `tier`.
+4. [x] Job resume: tier vẫn resolve và ghi sổ, nhưng `crew run` không truyền `--model` khi có `--resume` (giữ hành vi `run-commands.mjs:181-184`). Thêm test.
+5. [x] `crew doctor` in bảng tier.
+6. [x] Sửa `SKILL.md` + `routing-table.md`.
+7. [x] Bump `plugin.json` bản vá (2.0.5), owner update plugin, `diff -rq` bản cài với source rỗng.
 
 ## Verification
 
@@ -74,3 +74,12 @@ Bậc `light`–`deep` chỉ khớp Gemini; Claude chỉ qua bậc `claude`/`cla
 
 - Nhà cung cấp đổi lược đặt tên → regex trượt: lỗi liệt kê tên sống, repo ghi đè qua `modelTiers` không cần sửa code.
 - `agy models` chậm làm `add-job` chậm ~vài giây: chấp nhận; chỉ gọi cho anti headless.
+
+## Ghi chú khi cook (2026-11-06)
+
+- Probe bước 0 dương: `claude-sonnet-4-6`, `claude-opus-4-6-thinking` chạy headless, JSON cùng hình dạng Gemini (ghi ở `docs/transport-measurements.md`). Credit Antigravity mỗi lượt chưa đo được từ CLI. Lưu ý: `agy -p --output-format json ...` bị agy từ chối; `-p` phải đứng cuối.
+- Codex qua `--tier` ghi `model` = model trong `~/.codex/config.toml` (để sổ đo được model đã chạy, `crew run` truyền `-m` từ sổ). `codexConfigModel`, `parseAgyModels` dời sang `scripts/lib/model-tiers.mjs`, `setup.mjs` re-export.
+- Logic cờ `--tier`/`--bump-from` nằm ở `scripts/cli/add-job-tier-flags.mjs` (giữ `run-commands.mjs` gọn). Cờ tay thắng thì vẫn kiểm bậc hợp worker/transport, không gọi `agy models`.
+- `crew doctor` in 6 dòng tier (thêm `claude`, `claude-max`), và bỏ dòng "codex app" còn sót từ phase 1.
+- Bump 2.0.5, cài plugin bằng `claude plugin marketplace update` + `claude plugin update`, `diff -rq` rỗng.
+

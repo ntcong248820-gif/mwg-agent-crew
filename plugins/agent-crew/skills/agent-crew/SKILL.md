@@ -195,8 +195,8 @@ Quá `MAX_JOBS` job thì dừng, báo user, không tự chạy tiếp.
 Không có entry trong sổ thì không được bắn job. Job nền không có entry là job mất dấu.
 
 ```bash
-crew add-job "$MP" --worker anti --role owner --model {model} --title "lọc keyword B2B"
-crew add-job "$MP" --worker codex --role assist --effort medium --title "viết parser" --allow src/parser/
+crew add-job "$MP" --worker anti --role owner --tier standard --title "lọc keyword B2B"
+crew add-job "$MP" --worker codex --role assist --tier code --title "viết parser" --allow src/parser/
 crew add-job "$MP" --worker claude --role owner --model {model của bạn} --title "đọc số, viết kết luận"
 ```
 
@@ -206,14 +206,18 @@ hai job không bao giờ trùng file.
 | Cờ | Luật |
 | --- | --- |
 | `--role` | Bắt buộc, `owner` \| `assist` |
-| `--model` | Bắt buộc với Anti và Claude. Tên lấy từ `crew doctor`, **không** từ trí nhớ: tên cũ là job chết ngay lượt đầu. Anti `app` chỉ nhận bậc `flash_lite\|flash\|pro\|inherit` |
-| `--effort` | Bắt buộc với Codex (`low\|medium\|high`), thay cho model |
+| `--tier` | **Cách mặc định** chọn model cho Anti và Codex: `light\|standard\|deep\|code\|claude\|claude-max`. Crew đổi ra tên `agy models` còn sống (Anti headless), bậc agentapi (Anti app) hoặc `--effort` (Codex), ghi cả bậc lẫn model vào sổ. Bậc nào hợp loại việc nào: `references/routing-table.md` mục *Model*. `code` chỉ cho Codex; `claude`/`claude-max` chỉ cho Anti headless (model Claude chạy bằng quota Antigravity, không tốn token Claude) |
+| `--bump-from <seq>` | Job trước chưa đạt vì model yếu: nâng đúng 1 bậc từ bậc của job đó (`light→standard→deep`), tự ghi note. Không dùng cùng `--tier` |
+| `--model` | Ép tay tên model (thắng `--tier`, ghi note). Bắt buộc với job Claude. Tên lấy từ `crew doctor`, **không** từ trí nhớ: tên cũ là job chết ngay lượt đầu. Anti `app` chỉ nhận `flash_lite\|flash\|pro\|inherit` |
+| `--effort` | Ép tay mức Codex (`low\|medium\|high`), thắng `--tier` |
 | `--transport app --note "..."` | Chỉ Anti, chỉ trong 3 ca ở Bước 3; thiếu `--note` là bị từ chối. Codex bị từ chối dù có `--note` |
 | `--allow <prefix>` | Job được ghi ngoài thư mục của run (lặp được). Control plane và file bảo vệ không khai được |
 
 Job Claude **không** có transport: không process nào được bắn, bạn tự làm.
 
-Bảng bậc model theo loại việc: `references/routing-table.md` mục *Model*.
+Bảng bậc theo loại việc: `references/routing-table.md` mục *Model*. `crew doctor` in mỗi bậc
+đang ra model nào trên máy này. Tier không khớp model còn sống thì `add-job` báo lỗi kèm
+tên còn sống — không tự trượt sang bậc khác.
 
 ## Bước 5 — Viết brief
 

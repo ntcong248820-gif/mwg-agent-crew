@@ -542,6 +542,9 @@ export function addJob(manifestPath, job) {
       // Codex takes its tier as a reasoning effort rather than a model name, so
       // recording only `model` would leave every Codex job looking unset.
       effort: job.effort ?? null,
+      // The one word the dispatcher chose (`--tier`), next to the model or effort
+      // it resolved to. Null when the job was given a model or effort by hand.
+      tier: job.tier ?? null,
       title: job.title,
       evidence: job.evidence,
       // Path prefixes this job is allowed to write outside tasks/{task}/. Some

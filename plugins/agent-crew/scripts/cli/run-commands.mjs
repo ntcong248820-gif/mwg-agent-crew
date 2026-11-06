@@ -13,6 +13,7 @@ import { resolveLogDir } from "../crew-guards.mjs";
 import { crewDigest } from "../lib/crew-digest.mjs";
 import { layoutOf, loadLayout, normalizeTask, runDirRel, usesTask } from "../lib/crew-layout.mjs";
 import { isWorkerRole } from "../lib/crew-role.mjs";
+import { tierFields } from "./add-job-tier-flags.mjs";
 
 export class CliError extends Error {}
 
@@ -98,30 +99,33 @@ const SHORT = { antigravity: "anti", codex: "codex", claude: "claude" };
 /**
  * In `seq<TAB>evidence`. Không khai `--evidence` thì evidence là
  * `{thư mục run}/worker-{worker}-{seq}.md` — hai job không bao giờ trùng file.
+ * `--tier`/`--bump-from` chọn model/effort theo bậc (add-job-tier-flags.mjs).
  */
 export function addJobCli(argv, { cwd }) {
   try {
     const { pos, flags } = parseFlags(argv,
-      ["worker", "role", "title", "evidence", "model", "effort", "transport", "note", "allow"],
+      ["worker", "role", "title", "evidence", "model", "effort", "transport", "note", "allow", "tier", "bump-from"],
       { positional: 1, repeatable: ["allow"] });
     const manifestPath = resolve(cwd, pos[0]);
     const worker = WORKER_NAMES[flags.worker];
     if (!worker) throw new CliError(`--worker phải là anti|codex|claude, nhận "${flags.worker ?? ""}"`);
     if (!flags.title) throw new CliError("thiếu --title");
-    if (worker === "codex" ? !flags.effort : !flags.model) {
-      throw new CliError(worker === "codex" ? "job Codex cần --effort (low|medium|high)" : "thiếu --model (crew doctor in tên model còn sống)");
-    }
     const m = readManifest(manifestPath);
+    const tiered = tierFields({ worker, flags, manifest: m });
+    const model = flags.model ?? tiered.model;
+    const effort = flags.effort ?? tiered.effort;
     const runRel = typeof m.runDir === "string" ? m.runDir : relative(m.workspace, dirname(manifestPath)).split(sep).join("/");
     const evidence = flags.evidence ?? `${runRel}/worker-${SHORT[worker]}-${m.jobs.length + 1}.md`;
     const job = addJob(manifestPath, {
       worker, role: flags.role, title: flags.title, evidence,
-      ...(flags.model ? { model: flags.model } : {}),
-      ...(flags.effort ? { effort: flags.effort } : {}),
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+      ...(tiered.tier ? { tier: tiered.tier } : {}),
       ...(flags.transport ? { transport: flags.transport } : {}),
       ...(flags.note ? { note: flags.note } : {}),
       ...(flags.allow ? { filesMayModify: flags.allow } : {}),
     });
+    for (const note of tiered.notes) appendNote(manifestPath, job.seq, note);
     process.stdout.write(`${job.seq}\t${job.evidence}\n`);
     return 0;
   } catch (err) {

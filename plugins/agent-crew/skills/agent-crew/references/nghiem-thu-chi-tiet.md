@@ -103,7 +103,7 @@ Job ghi hợp lệ ra ngoài thư mục của run — ví dụ bài viết nằm
 khai lúc `crew add-job`, không thì gate đánh là vi phạm:
 
 ```bash
-crew add-job "$MP" --worker anti --role owner --model {model} --title "tối ưu HTML" \
+crew add-job "$MP" --worker anti --role owner --tier standard --title "tối ưu HTML" \
   --allow "content/{slug}/"
 ```
 

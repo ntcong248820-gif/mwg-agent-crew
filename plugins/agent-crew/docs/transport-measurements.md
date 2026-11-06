@@ -204,3 +204,25 @@ job store của companion, không ở đây.
 
 Vận hành: vẫn nên **giãn các lệnh dispatch app ra** ~5s. Khoan nhượng làm job không chết
 oan, nhưng mỗi lần hỏi lại vẫn tốn một vòng gọi process.
+
+### Model Claude qua `agy` headless — đo 2026-11-06
+
+Câu hỏi: hai model Claude mà `agy models` liệt kê (`claude-sonnet-4-6`,
+`claude-opus-4-6-thinking`) có chạy được ở Anti headless như model Gemini không, để làm
+bậc `claude`/`claude-max` của `--tier`.
+
+Lệnh: `agy --output-format json --model <m> -p "Trả lời đúng một chữ: ok. Không dùng tool nào."`
+(`-p` phải đứng cuối hoặc dính prompt: `agy -p --output-format json ...` bị `agy` từ chối,
+exit 2, vì `-p` nuốt `--output-format` làm prompt).
+
+| Model | exit | Thời gian | JSON | `usage.total_tokens` |
+| --- | --- | --- | --- | --- |
+| `claude-sonnet-4-6` | 0 | 9s (3.8s trong agy) | `conversation_id`, `status: SUCCESS`, `response`, `num_turns`, `usage` | 10315 |
+| `claude-opus-4-6-thinking` | 0 | 9s (5.1s) | như trên | 10311 |
+| `gemini-3.8-flash-medium` (đối chứng) | 0 | 9s (5.1s) | như trên | 9033 |
+
+Kết luận: probe dương. JSON cùng hình dạng với Gemini nên adapter headless đọc như cũ
+(silent-fail, `usage`, resume theo `conversation_id` đều dùng được). Credit Antigravity
+tốn bao nhiêu cho mỗi model **chưa đo**: trang quota nằm trong app, CLI không đọc được.
+`thinking_tokens` của `claude-opus-4-6-thinking` báo 0 cho câu một chữ — chưa nói gì về
+việc thật.

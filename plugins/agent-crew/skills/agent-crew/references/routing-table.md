@@ -121,23 +121,34 @@ khớp entry nào, rồi khớp prefix cho phép của task, và rơi vào `inSc
 ## Model
 
 Chọn bậc theo **lượng phán đoán cần để đi từ input sang output**, không theo cảm
-giác việc nặng hay nhẹ.
+giác việc nặng hay nhẹ. Ghi bằng `crew add-job --tier <bậc>`; crew đổi ra tên còn sống.
 
-| Loại việc | Anti headless (`agy`) | Anti app (`agentapi`) | Codex (headless) |
-| --- | --- | --- | --- |
-| Điền theo mẫu, chuẩn hoá bảng, readback/export | bậc flash, mức `low` | `flash_lite` | — |
-| Thi hành skill nhiều case, crawl + phân loại theo whitelist | bậc flash, mức `medium` | `flash` | `--effort low` |
-| Suy luận từ dữ liệu sang output chưa có mẫu sẵn | bậc cao nhất `agy models` liệt kê | `pro` | `--effort medium` |
-| Code/pipeline nhiều bước, refactor tool | — | — | `--effort high` |
+| Loại việc | `--tier` | Anti headless (`agy`) | Anti app (`agentapi`) | Codex (headless) |
+| --- | --- | --- | --- | --- |
+| Điền theo mẫu, chuẩn hoá bảng, readback/export | `light` | flash-lite, không có thì flash-low | `flash_lite` | `--effort low` |
+| Thi hành skill nhiều case, crawl + phân loại theo whitelist | `standard` | flash-medium | `flash` | `--effort low` |
+| Suy luận từ dữ liệu sang output chưa có mẫu sẵn | `deep` | pro-high, pro, không có Pro thì flash-high | `pro` | `--effort medium` |
+| Code/pipeline nhiều bước, refactor tool | `code` | — | — | `--effort high` |
+| Phán đoán sâu muốn giao đi để đỡ token Claude; viết/tổng hợp cần giọng tốt | `claude` | claude-sonnet bản mới nhất | — | — |
+| Như trên, việc khó nhất (suy luận nhiều bước, review thiết kế) | `claude-max` | claude-opus bản mới nhất | — | — |
 
-Bảng này **cố ý không ghi tên model**. Tên đổi theo đợt phát hành của nhà cung cấp, và
-một tên cũ nằm trong tài liệu là job chết ngay lượt đầu (đo 16/10: `gemini-3.7-flash-medium`
-và `gpt-5.5` cùng hỏng ở hai job đầu của một run). Trước khi dispatch, chạy `crew doctor`:
-nó in tên `agy models` còn liệt kê và model trong `~/.codex/config.toml`.
+Bảng này **cố ý không ghi tên model đầy đủ**. Tên đổi theo đợt phát hành của nhà cung cấp,
+và một tên cũ nằm trong tài liệu là job chết ngay lượt đầu (đo 16/10: `gemini-3.7-flash-medium`
+và `gpt-5.5` cùng hỏng ở hai job đầu của một run). `--tier` chọn tên từ chính `agy models`
+lúc ghi sổ (regex neo, lấy bản cao nhất); `crew doctor` in mỗi bậc đang ra tên nào. Bậc
+không khớp tên còn sống thì `add-job` báo lỗi kèm danh sách, **không** trượt sang bậc khác.
+Nhà cung cấp đổi lược đặt tên thì repo ghi đè bằng `modelTiers` trong `crew.config.json`
+(`{"deep": {"agy": ["^gemini-[\\d.]+-pro$"]}}`; khoá `agy`/`app`/`effort`), không cần sửa code.
 
-Bậc chỉ là điểm khởi đầu. Job fail vì model yếu thì **nâng đúng 1 bậc và ghi note**,
-không nhảy thẳng lên `pro-high` cho mọi thứ — làm vậy thì lần sau không ai biết việc
-nào thật sự cần bậc cao.
+Bậc `claude`/`claude-max` chạy model Claude **bằng quota Antigravity**, không tốn token
+Claude của owner (đo 06/11: chạy headless như Gemini, JSON cùng hình dạng). Chỉ Anti
+headless. Credit Antigravity mỗi lượt chưa đo được từ CLI.
+
+Bậc chỉ là điểm khởi đầu. Job fail vì model yếu thì **nâng đúng 1 bậc**:
+`crew add-job --bump-from <seq>` (`light→standard→deep`, tự ghi note), không nhảy thẳng
+lên bậc cao nhất cho mọi thứ — làm vậy thì lần sau không ai biết việc nào thật sự cần
+bậc cao. `deep` không tự nâng lên `claude`: đổi nhà cung cấp là quyết định có chủ ý,
+ghi bằng `--tier` tay.
 
 Ràng buộc từng runtime:
 
@@ -145,9 +156,9 @@ Ràng buộc từng runtime:
 | --- | --- |
 | `agy` | nhận tên model đầy đủ; `agy models` liệt kê bản còn sống |
 | `agentapi` | **chỉ** nhận `flash_lite\|flash\|pro\|inherit`, không nhận tên đầy đủ |
-| Codex | Bậc đặt bằng `--effort`; vẫn truyền `-m` (lấy tên từ `crew doctor`) — để trống thì manifest không ghi được model nào đã chạy, đúng cái field này sinh ra để đo. Cache model của Codex liệt kê cả model tài khoản không được dùng, nên tin model trong config máy hơn cache. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
+| Codex | Bậc đặt bằng `--effort`; `--tier` ghi `model` là model trong `~/.codex/config.toml` và `crew run` truyền `-m` từ sổ — để trống thì manifest không ghi được model nào đã chạy, đúng cái field này sinh ra để đo. Cache model của Codex liệt kê cả model tài khoản không được dùng, nên tin model trong config máy hơn cache. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
 
-**Không truyền `--model` thì không dispatch.** Trước phase 03, mọi job trong mọi
+**Không có `--tier` hay `--model` thì không dispatch.** Trước phase 03, mọi job trong mọi
 manifest đều `"model": null` — knob có mà chưa ai bật, nên không có cách nào đo model
 nào hay fail ngoài đoán. `crew add-job` ghi `model` (và `effort` cho Codex) để lần sau đo
 được, và `crew run` lấy lại đúng giá trị đó từ sổ.
