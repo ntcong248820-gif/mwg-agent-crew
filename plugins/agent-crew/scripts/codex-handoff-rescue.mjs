@@ -13,7 +13,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { evidenceHasStatus, readWorkerStatus, workerEnv } from "./crew-guards.mjs";
+import { codexTurnUsage, evidenceHasStatus, readWorkerStatus, workerEnv } from "./crew-guards.mjs";
 
 export { evidenceHasStatus };
 
@@ -23,7 +23,7 @@ const DRAIN_MS = 2_000;
 /**
  * Chạy `codex <args>` với `prompt` trên stdin, ghi stream vào `stream` của job
  * gốc. Không bao giờ reject: lượt cứu hỏng thì job được chấm như chưa từng cứu.
- * → `{ran, ok, durationSec, killedFor?}`; `ok` = evidence giờ đọc ra CONTINUE.
+ * → `{ran, ok, durationSec, killedFor?, usage?}`; `ok` = evidence giờ đọc ra CONTINUE.
  */
 export function runHandoffRescue({ args, prompt, workspace, evidenceAbs, stream, hardMs, idleMs }) {
   const started = Date.now();
@@ -42,6 +42,8 @@ export function runHandoffRescue({ args, prompt, workspace, evidenceAbs, stream,
     let idle = null;
     let hard = null;
     let drain = null;
+    let residual = "";
+    let usage = null;
 
     const signalGroup = (sig) => {
       try { process.kill(-child.pid, sig); } catch { try { child.kill(sig); } catch { /* already gone */ } }
@@ -62,7 +64,7 @@ export function runHandoffRescue({ args, prompt, workspace, evidenceAbs, stream,
       let ok = false;
       try { ok = existsSync(evidenceAbs) && readWorkerStatus(evidenceAbs).status === "continue"; } catch { /* unreadable = not rescued */ }
       stream.note(`handoff rescue ${ok ? "ghi được handoff" : "không ra Status: CONTINUE"}`);
-      resolveRescue({ ran: true, ok, durationSec: Math.round((Date.now() - started) / 1000), ...(killedFor ? { killedFor } : {}) });
+      resolveRescue({ ran: true, ok, durationSec: Math.round((Date.now() - started) / 1000), ...(killedFor ? { killedFor } : {}), ...(usage ? { usage } : {}) });
     };
     const armIdle = () => {
       if (idle) clearTimeout(idle);
@@ -71,7 +73,13 @@ export function runHandoffRescue({ args, prompt, workspace, evidenceAbs, stream,
     const overall = setTimeout(() => kill(`exceeded ${Math.round(hardMs / 1000)}s`), hardMs);
     armIdle();
 
-    child.stdout.on("data", (chunk) => { stream.write(chunk); armIdle(); });
+    child.stdout.on("data", (chunk) => {
+      stream.write(chunk);
+      const parts = (residual + chunk).split("\n");
+      residual = parts.pop() ?? "";
+      for (const line of parts) usage = codexTurnUsage(line, usage);
+      armIdle();
+    });
     child.stderr.on("data", (chunk) => stream.write(`${JSON.stringify({ type: "crew.stderr", text: String(chunk) })}\n`));
     child.stdin.on("error", (err) => stream.note(`handoff rescue stdin failed: ${err.code ?? err.message}`));
     child.on("error", (err) => {

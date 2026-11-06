@@ -57,6 +57,7 @@ import {
   handoffRescuePrompt,
   HANDOFF_RESCUE_MS,
   HANDOFF_RESCUE_IDLE_MS,
+  codexTurnUsage,
 } from "./crew-guards.mjs";
 import { evidenceHasStatus, runHandoffRescue } from "./codex-handoff-rescue.mjs";
 // Dời sang crew-guards để anti-run dùng chung; giữ export ở đây cho test và nơi gọi cũ.
@@ -575,6 +576,7 @@ export async function codexRun(options) {
     let events = 0;
     let residual = "";              // a chunk can split a line; count whole lines only
     const touched = new Set();      // paths codex says it wrote, from file_change events
+    let usage = null;               // last turn.completed usage (thread total, see codexTurnUsage)
     let threadId = null;            // the session id, for a later `exec resume`
     let nextHeartbeat = 25;
     let stderrTail = [];
@@ -715,6 +717,8 @@ export async function codexRun(options) {
         // Same field name the app transport fills from the companion, so the
         // write-scope gate reads one name whatever the transport was.
         touchedFiles: touched.size ? [...touched] : null,
+        // Lượt cứu chạy sau lượt chính trên cùng thread, nên số của nó mới hơn.
+        usage: handoffRescue?.usage ?? usage,
         exitCode: code,
         signal,
         killedFor,
@@ -745,6 +749,7 @@ export async function codexRun(options) {
       events += parts.filter(Boolean).length;
       for (const line of parts) {
         collectFileChange(line, touched);
+        usage = codexTurnUsage(line, usage);
         const next = collectThreadId(line, threadId);
         // Reported the moment it is known, not at the end: the job most worth
         // resuming is the one that died mid-flight, and its result object never
@@ -1636,6 +1641,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         signal: result.signal,
         streamEvents: result.streamEvents,
         handoffRescue: result.handoffRescue,
+        usage: result.usage ?? null,
         // Filled on both transports: headless reads it off the stream's
         // file_change events, app gets it from the companion's result. It is an
         // authorship signal for the write-scope gate, and one-way -- a file

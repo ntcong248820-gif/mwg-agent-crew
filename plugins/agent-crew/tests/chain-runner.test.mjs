@@ -66,6 +66,7 @@ const fakeCalls = (s) => Number(readFileSync(join(s.fake, "count"), "utf8").trim
   t.check("...lát kế giữ worker/role/transport", `${js[1].worker}/${js[1].role}/${js[1].transport}`, "codex/owner/headless");
   t.check("...gốc ghi checkpoint ở lát 2", root(s).chainCheckpointSlice, 2);
   t.check("...gốc ghi số lát", root(s).chainSlices, 2);
+  t.check("sổ ghi usage Codex của từng lát (turn.completed)", js.map((j) => j.usage?.input_tokens).join(","), "1000,2000");
   const brief2 = readFileSync(join(s.ws, ...RUN_REL.split("/"), "brief-codex-2.md"), "utf8");
   t.check("brief lát 2 do crew viết: trỏ handoff lát 1 và brief gốc", brief2.includes(`${RUN_REL}/worker-codex-1.md`) && brief2.includes(`${RUN_REL}/brief-codex-1.md`), true);
   t.check("...không chép chữ của worker vào brief", brief2.includes("bước 2"), false);
@@ -73,6 +74,7 @@ const fakeCalls = (s) => Number(readFileSync(join(s.fake, "count"), "utf8").trim
   const startedAt = root(s).chainStartedAt;
   const sidecar = join(s.ws, "tasks", "t", "data", "crew-logs", "crew-test", "chain-1.jsonl");
   t.check("sidecar chain-1.jsonl có dòng mỗi lát + checkpoint", existsSync(sidecar) && readFileSync(sidecar, "utf8").trim().split("\n").length, 3);
+  t.check("...dòng lát mang usage để đo thread phình", JSON.parse(readFileSync(sidecar, "utf8").split("\n")[1]).usage.input_tokens, 2000);
   const paths = spawnSync(process.execPath, [CREW, "paths", s.manifestPath, "--job", "2"], { encoding: "utf8" }).stdout;
   t.check("crew paths của lát in sidecar theo job gốc", paths.includes(`chain\t${sidecar}`), true);
 

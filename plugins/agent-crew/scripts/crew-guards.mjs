@@ -404,6 +404,21 @@ export function readWorkerStatus(evidenceAbs) {
   return { status: "done_unverified", reported: null };
 }
 
+/**
+ * `usage` của một dòng stream Codex `{"type":"turn.completed","usage":{...}}`, hoặc
+ * `prev` khi dòng không phải sự kiện đó. Lượt bị giết giữa chừng không có
+ * `turn.completed`, nên job hết giờ chỉ có số khi lượt cứu handoff chạy xong.
+ * Đo 06/11: con số tăng dần qua các lát cùng thread (602k → 1,40M → 2,44M input),
+ * nên đọc nó như tổng dồn của thread; phần của một lát = lát này trừ lát trước.
+ */
+export function codexTurnUsage(line, prev = null) {
+  if (!line || !line.includes("turn.completed")) return prev;
+  let d;
+  try { d = JSON.parse(line); } catch { return prev; }
+  if (d?.type !== "turn.completed" || !d.usage || typeof d.usage !== "object") return prev;
+  return d.usage;
+}
+
 /** Evidence đã tự phán (có dòng Status) thì không cần lượt cứu handoff. */
 export function evidenceHasStatus(evidenceAbs) {
   try {

@@ -218,6 +218,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   t.check("...rescue ran exactly once, on the same thread", ok.calls.length === 1 && ok.calls[0].includes("resume 01a04169-2763-79d1-9037-6dc85981fad1"), true);
   t.check("...and was handed the rescue prompt, not the brief", ok.calls[0].includes("exec"), true);
   t.check("...the manifest records continue and the rescue", `${ok.job.status}|${ok.job.handoffRescue?.ran}|${ok.job.handoffRescue?.ok}`, "continue|true|true");
+  t.check("...usage comes from the rescue turn, the killed turn never completed", ok.job.usage?.input_tokens, 4242);
   t.check("...the evidence keeps the first part and adds the handoff", ok.evidence.startsWith("phần đầu") && ok.evidence.includes("## Handoff"), true);
   t.check("...the kill stays on the record", /exceeded/.test(ok.job.killedFor ?? ok.r.json?.killedFor ?? ""), true);
   t.check("...without a runtime disagreement (the timeout is what CONTINUE means)", Boolean(ok.job.runtimeVerdict), false);

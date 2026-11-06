@@ -132,7 +132,9 @@ do crew viết theo mẫu cố định — không chép chữ worker). Trạng t
   slot hết hạn như mọi job Anti headless.
 - **Monitor.** Sidecar `chain-<N>.jsonl` (đường ở dòng `chain` của `crew paths`) có một
   dòng `{"type":"crew.chain","slice","seq","status","conversationId","elapsedSec","usage"}`
-  mỗi lát, thêm `"stop"` khi chuỗi dừng hoặc tới checkpoint. Chuỗi bắn nền thì exit code đã
+  mỗi lát, thêm `"stop"` khi chuỗi dừng hoặc tới checkpoint. `usage` của Codex là **tổng dồn
+  của thread** (đo 06/11): lát sau trừ lát trước ra phần của lát — tăng nhanh dần là thread
+  đang phình, cân nhắc dừng chuỗi và mở thread mới bằng brief tóm tắt. Chuỗi bắn nền thì exit code đã
   là ping; Monitor chỉ để thấy tiến độ giữa chừng:
 
   ```bash

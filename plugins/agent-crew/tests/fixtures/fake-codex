@@ -89,7 +89,7 @@ case "$FAKE_MODE" in
       cat > /dev/null
       case "$FAKE_MODE" in
         hang_handoff)
-          printf '{"type":"turn.completed"}\n'
+          printf '{"type":"turn.completed","usage":{"input_tokens":4242,"output_tokens":7}}\n'
           printf '\n## Handoff\n### Đã xong\n- bước 1\n### Đang dở\n- bước 2\n### Bước kế tiếp\n- làm nốt bước 2\n### File đã đụng\nKhông có\n\nStatus: CONTINUE\n' >> "$EV"
           exit 0 ;;
         hang_rescue_hang) exec sleep 60 ;;
@@ -115,7 +115,8 @@ case "$FAKE_MODE" in
     prev=""; for a in "$@"; do [ "$prev" = resume ] && TID="$a"; prev="$a"; done
     [ -n "$FAKE_CHAIN_SPLIT" ] && [ "$N" = "$FAKE_CHAIN_SPLIT" ] && TID="5f1e2d3c-4b5a-4968-8776-655443322110"
     printf '{"type":"thread.started","thread_id":"%s"}\n' "$TID"
-    printf '{"type":"turn.completed"}\n'
+    # usage tổng dồn của thread như Codex thật: lượt N báo N*1000 input.
+    printf '{"type":"turn.completed","usage":{"input_tokens":%s,"output_tokens":10}}\n' "$((N * 1000))"
     printf '%s\nARGV=%s\n' "$BRIEF" "$*" > "$FAKE_CHAIN_DIR/brief-$N.txt"
     [ -f "$FAKE_CHAIN_DIR/$N.md" ] || exit 1   # không có kịch bản cho lượt này: worker chết
     [ -f "$FAKE_CHAIN_DIR/$N.work" ] && date > "$(dirname "$EVP")/work-$N.txt"

@@ -273,8 +273,12 @@ không có hạn mềm; handoff đến từ lượt cứu.
   ~71 số / 3m (lát 1 ~65): thread resume đọc lại handoff + file trước khi làm tiếp.
 - Handoff là dữ liệu, và **tự khai tiến độ của worker lệch file thật** (lát 2 khai "66–100,
   bắt đầu 101–150", file thật tới 136). Checkpoint đọc file thật, không đọc lời khai.
-- `usage` của Codex headless là null ở sổ (adapter chưa ghi usage cho Codex), nên sidecar
-  chưa đo được thread phình theo token. Còn mở.
+- `usage` của Codex headless lúc đo còn null ở sổ (adapter chưa đọc). Stream có sẵn ở
+  `turn.completed`: lát 1 → 2 → 3 báo input 602k → 1,40M → 2,44M (cached 553k → 1,28M →
+  2,30M), output 3,7k → 6,7k → 9,2k. Tăng dần qua các lát cùng thread, nên đọc như **tổng
+  dồn của thread**: phần riêng mỗi lát ~0,6M / 0,8M / 1,0M input, trên 90% là cached. Lượt bị
+  giết không có `turn.completed`, số của lát đó đến từ lượt cứu. Từ 2.1.2 adapter ghi
+  `usage` (lượt cứu thắng lượt chính) vào sổ và sidecar chuỗi.
 - `crew collect`: 1 PASS + 2 `CHAINED`. Lần đầu exit 2 vì `SCOPE_VIOLATION` theo mtime: file
   code phase 5 phiên Claude tự sửa trong lúc chuỗi chạy. Bác bằng `--not-ours … --reason`
   → exit 0. Đo chuỗi trong repo đang sửa code thì nên commit trước hoặc chạy ở worktree riêng.
