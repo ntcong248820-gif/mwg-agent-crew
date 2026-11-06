@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Giao việc chủ động + release 2.1.0"
-status: pending
+status: in-progress
 priority: P2
 effort: "5h"
 dependencies: [1, 2, 3, 4]
@@ -51,11 +51,11 @@ dependencies: [1, 2, 3, 4]
 
 ## Tasks & Steps
 
-1. [ ] Trigger mặc định + config `delegate` + test.
-2. [ ] Branch `delegate` trong gate + test.
-3. [ ] `crew doctor`/`crew init`.
-4. [ ] Sửa `SKILL.md`, playbook, README.
-5. [ ] Toàn bộ test: `node plugins/agent-crew/tests/run.mjs`.
+1. [x] Trigger mặc định + config `delegate` + test.
+2. [x] Branch `delegate` trong gate + test.
+3. [x] `crew doctor`/`crew init`.
+4. [x] Sửa `SKILL.md`, playbook, README.
+5. [x] Toàn bộ test: `node plugins/agent-crew/tests/run.mjs`.
 6. [ ] Bump 2.1.0; owner cập nhật plugin trong Claude Code (`/plugin` → update `agent-crew@agent-crew-marketplace`); kiểm `diff -rq` bản cài 2.1.0 với source rỗng (trừ `.in_use`).
 7. [ ] Bật thử `delegate: "aggressive"` ở một repo owner chọn; sau ~1 tuần đọc `routingLog` xem tỉ lệ `delegate` bị Claude bỏ qua.
 
@@ -68,3 +68,12 @@ dependencies: [1, 2, 3, 4]
 
 - Regex mặc định khớp quá rộng → giao oan: ngưỡng trong lời gate + log để chỉnh; repo đè được bằng `routingTriggers`.
 - Rollback: đặt `delegate: "default"` hoặc xoá khoá; không cần revert code.
+
+## Ghi chú khi cook (2026-11-06)
+
+- Trigger mặc định neo bằng ranh giới chữ Unicode (`(?<![\p{L}\p{N}])…`, cờ `iu`) chứ không `\b`: `\b` của JS không hiểu chữ có dấu. Hai id `default-code`, `default-research`; trigger repo cùng id thì đè, mặc định khớp tên API trong `costGate` thì bị bỏ im (không làm hỏng config repo vì repo không viết nó).
+- `aggressive`: mọi hit (1 hay nhiều kind) ra nhánh `delegate`; mention và costGate vẫn xét trước. Repo `default` giữ nguyên `suggest`/`dispatch`.
+- `crew init --delegate aggressive|default` ghi đúng một khoá vào `crew.config.json` (tạo mới hoặc giữ các khoá cũ); `crew doctor` in dòng `delegate`.
+- `SKILL.md` `metadata.version` lên 2.1.0 (trước đó kẹt ở 2.0.0 dù plugin đã 2.0.x).
+- Kiểm tay: repo `{"delegate":"aggressive"}` + prompt "refactor module parser cho gọn" → khối "giao việc chủ động"; đổi config `{}` → im.
+- Bước 7 (bật thử ở repo thật, đọc `routingLog` sau ~1 tuần) là việc của owner.
