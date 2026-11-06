@@ -945,6 +945,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       // still working. A guard whose refusal gets overwritten by the caller's
       // own error handler is not a guard.
       claimed = true;
+      // Cỡ brief vào sổ (mọi job, để đo); quá trần mềm thì thêm note và báo stderr.
+      {
+        const { briefSize, longBriefNote } = await import("./crew-guards.mjs");
+        const { appendNote: noteJob } = await import("./crew-manifest.mjs");
+        const bytes = briefSize(opts);
+        const note = longBriefNote(bytes);
+        try {
+          if (bytes != null) updateJobSync(opts.manifest, Number(opts.job), { briefBytes: bytes });
+          if (note) noteJob(opts.manifest, Number(opts.job), note);
+        } catch { /* sổ chỉ là bookkeeping ở đây */ }
+        if (note) console.error(`codex-run: ${note}`);
+      }
     }
     // Set before dispatch so the failure paths above already have it. An absent
     // field then means only one thing -- a job from before this field existed.

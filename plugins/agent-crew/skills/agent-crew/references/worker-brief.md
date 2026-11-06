@@ -2,7 +2,7 @@
 
 Một profile cho cả 3 worker. Brief nói **WHAT + NEED**, không nói HOW.
 
-Phép thử: chỉ viết thứ worker **không tự suy ra được** từ file + `SKILL.md`. Trần 2 KB.
+Phép thử: chỉ viết thứ worker **không tự suy ra được** từ file + `SKILL.md`. Nhắm ≤ 2 KB (quá thì vẫn chạy, collect gắn cờ `BRIEF DÀI`; trần cứng 8 KB).
 Lưu bản đã gửi đúng đường `brief` mà `crew paths <manifest> --job N` in ra.
 
 ## Lệnh chạm guard thì cấp nguyên văn
@@ -113,6 +113,6 @@ dòng `Status` và dòng "báo Claude" bằng biến thể chat: chỉ ghi evide
 đổi`, `## Thay đổi từ owner`, `## Ghi ngoài brief`, `## Việc còn mở`.
 
 Brief cho `@anti`/`@codex`: dòng 1 `Owner giao trực tiếp — {task}`, sau đó nguyên văn tin owner
-(cả brief quá 2 KB thì trỏ tới `owner-msg-{seq}.md`).
+(cả brief quá 2 KB thì nên trỏ tới `owner-msg-{seq}.md`).
 
 Cách viết từng mục, và ví dụ outcome vs kê bước: `dispatch-playbook.md`.

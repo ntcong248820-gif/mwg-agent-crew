@@ -13,7 +13,7 @@ import {
   createRun, addJob, updateJob, updateManifest, readManifest, writeManifest, MAX_DEPTH,
   claimRunSlot, MAX_JOBS, MAX_PARALLEL,
 } from "../scripts/crew-manifest.mjs";
-import { parseDuration, readPrompt, MAX_BRIEF_BYTES } from "../scripts/crew-guards.mjs";
+import { parseDuration, readPrompt, briefSize, longBriefNote, BRIEF_SOFT_BYTES, MAX_BRIEF_BYTES } from "../scripts/crew-guards.mjs";
 import { makeChecker, tmpWorkspace, MODULE_ROOT } from "./helpers.mjs";
 
 const t = makeChecker("manifest-guards");
@@ -280,19 +280,26 @@ const threw = (fn) => { try { fn(); return null; } catch (err) { return err.mess
 
   t.check("a brief under the cap passes", readPrompt({ promptFile: small }).length > 0, true);
   const over = threw(() => readPrompt({ promptFile: big }));
-  t.check("a brief over the cap is refused", /over the 2048-byte ceiling/.test(over ?? ""), true);
+  t.check("a brief over the cap is refused", /over the 8192-byte ceiling/.test(over ?? ""), true);
   t.check("...and the refusal says what to cut", /cut the HOW/.test(over ?? ""), true);
 
   // Measured in bytes, not characters: a Vietnamese brief that fits a
   // character count can still be a third over the byte ceiling.
-  const viet = "ữ".repeat(1000); // 3 bytes each
+  const viet = "ữ".repeat(2800); // 3 bytes each = 8400 bytes, 2800 chars
   t.check("the cap counts bytes, not characters",
-    /over the 2048-byte ceiling/.test(threw(() => readPrompt({ prompt: viet })) ?? ""), true);
+    /over the 8192-byte ceiling/.test(threw(() => readPrompt({ prompt: viet })) ?? ""), true);
 
   // The inline path is the same rule; a dispatcher that hit the cap must not be
   // able to route around it by moving the text onto the command line.
+  // Trần mềm: quá 2 KB vẫn chạy, chỉ ghi note; dưới thì không note.
+  const soft = "x".repeat(BRIEF_SOFT_BYTES + 500);
+  t.check("brief quá trần mềm, dưới trần cứng: vẫn qua", readPrompt({ prompt: soft }).length, BRIEF_SOFT_BYTES + 500);
+  t.check("...briefSize đo đúng byte (đã trim)", briefSize({ prompt: `  ${soft}\n` }), BRIEF_SOFT_BYTES + 500);
+  t.check("...note nhắc tách bối cảnh ra file", longBriefNote(BRIEF_SOFT_BYTES + 500).includes("tách bối cảnh ra file"), true);
+  t.check("đúng trần mềm thì không note", longBriefNote(BRIEF_SOFT_BYTES), "null");
+  t.check("briefSize không ném khi file không có", briefSize({ promptFile: join(ws, "missing.md") }), "null");
   t.check("--prompt is capped the same way",
-    /over the 2048-byte ceiling/.test(threw(() => readPrompt({ prompt: "x".repeat(MAX_BRIEF_BYTES + 1) })) ?? ""), true);
+    /over the 8192-byte ceiling/.test(threw(() => readPrompt({ prompt: "x".repeat(MAX_BRIEF_BYTES + 1) })) ?? ""), true);
 }
 
 process.exit(t.finish() ? 0 : 1);

@@ -166,13 +166,15 @@ Tới 25/08 cả ba ngưỡng dưới đây chỉ nằm trong `SKILL.md`, không
 luật không ai đo là một sở thích — và người trượt nó là người điều phối, tức là
 process duy nhất không có chốt nào canh. Bằng chứng: trong 24 brief viết sau khi
 có luật ≤2 KB, 23 cái dưới ngưỡng và một cái 2227 B, do chính người vừa chê brief
-dài viết ra.
+dài viết ra. Từ 2.2.1 trần 2 KB thành trần mềm (owner chốt 07/11): trần cứng làm
+dispatcher viết lại brief ngay lúc bắn, tốn token Claude hơn chính phần thừa; trần cứng
+giờ là 8 KB.
 
 | Ngưỡng | Giá trị | Ép ở đâu | Từ chối thế nào |
 | --- | --- | --- | --- |
 | `MAX_JOBS` | 6 | `addJob` | không thêm job thứ 7 vào manifest |
 | `MAX_PARALLEL` | 3 | `claimRunSlot`, trong lock | adapter thứ 4 không được đánh dấu `running` |
-| Brief | 2048 B | `readPrompt`, cả `--prompt-file` lẫn `--prompt` | adapter không bắn job |
+| Brief | mềm 2048 B, cứng 8192 B | `readPrompt`, cả `--prompt-file` lẫn `--prompt` | quá mềm: vẫn chạy, sổ ghi `briefBytes` + note, collect cờ `BRIEF DÀI`; quá cứng: adapter không bắn job |
 
 Ba chỗ đó là cổ chai thật, không phải chỗ thuận tay: mọi job đều đi qua `addJob`,
 mọi adapter đều `claimRunSlot` trước khi spawn, và cả hai adapter đều đọc brief

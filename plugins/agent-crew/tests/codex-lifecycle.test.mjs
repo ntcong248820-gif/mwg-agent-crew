@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { createRun, addJob, claimRunSlot, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
 import { FIXTURE_BIN, MODULE_ROOT, makeChecker, seedLegacyJob, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { collectRun } from "../scripts/crew-collect.mjs";
 import { DEFAULT_LAYOUT, LEGACY_LAYOUT } from "../scripts/lib/crew-layout.mjs";
 
 const t = makeChecker("codex-lifecycle");
@@ -211,6 +212,23 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
     const evAbs = join(ws, ev);
     return { r, job: readManifest(mp).jobs[0], calls, evidence: existsSync(evAbs) ? readFileSync(evAbs, "utf8") : null };
   };
+
+  // Brief quá trần mềm 2 KB: job vẫn chạy, sổ ghi cỡ brief + note, collect gắn cờ.
+  {
+    const dir = join(ws, RUN_DIR_REL, "long-brief");
+    const { manifestPath: mp } = createRun({ runDir: dir, runId: "long-brief", task: "t", workspace: ws, depth: 0 });
+    const ev = join(RUN_DIR_REL, "long-brief", "long-brief.md");
+    addJob(mp, { worker: "codex", role: "owner", title: "brief dài", evidence: ev });
+    const longBrief = writeFile(join(ws, "long-brief.md"), `làm việc X\n${"bối cảnh ".repeat(400)}\n`);
+    const r = run({ mode: "ok", evidence: ev, promptFile: longBrief, extra: ["--manifest", mp, "--job", "1"] });
+    const job = readManifest(mp).jobs[0];
+    t.check("brief ~4 KB (quá trần mềm) vẫn chạy, exit 0", r.exit, 0);
+    t.check("...sổ ghi briefBytes", job.briefBytes > 2048 && job.briefBytes < 8192, true);
+    t.check("...kèm note nhắc tách bối cảnh", (job.notes ?? []).some((n) => n.includes("quá trần mềm")), true);
+    t.check("...stderr báo ngay lúc bắn", r.stderr.includes("quá trần mềm"), true);
+    const row = collectRun(mp, { workspace: ws, dryRun: true }).rows[0];
+    t.check("collect: PASS + cờ BRIEF DÀI, không phải WARN", `${row.verdict}|${row.flags.includes("BRIEF DÀI")}|${row.flags.includes("WARN")}`, "PASS|true|false");
+  }
 
   const ok = hang("ok", "hang_handoff");
   t.check("hard timeout → rescue → job is continue", ok.r.json?.status, "continue");

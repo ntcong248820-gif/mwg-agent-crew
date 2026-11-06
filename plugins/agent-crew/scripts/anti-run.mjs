@@ -796,6 +796,18 @@ export async function main(argv, { deps = {} } = {}) {
       // still working. A guard whose refusal gets overwritten by the caller's
       // own error handler is not a guard.
       claimed = true;
+      // Cỡ brief vào sổ (mọi job, để đo); quá trần mềm thì thêm note và báo stderr.
+      {
+        const { briefSize, longBriefNote } = await import("./crew-guards.mjs");
+        const { appendNote: noteJob } = await import("./crew-manifest.mjs");
+        const bytes = briefSize(opts);
+        const note = longBriefNote(bytes);
+        try {
+          if (bytes != null) updateJobSync(opts.manifest, Number(opts.job), { briefBytes: bytes });
+          if (note) noteJob(opts.manifest, Number(opts.job), note);
+        } catch { /* sổ chỉ là bookkeeping ở đây */ }
+        if (note) console.error(`anti-run: ${note}`);
+      }
       // Chỉ để hiển thị: verdict của job chat đi đúng đường của mọi job khác. Ghi
       // cả `false` khi lượt trước của seq này là chat mà lượt này không. Lỗi ghi
       // (khoá manifest bận) chỉ cảnh báo: một nhãn hiển thị không được làm fail job.

@@ -31,8 +31,16 @@ export const MAX_TIMEOUT_MS = 30 * 60_000;
  * There is deliberately no override flag. An escape hatch the caller can flip
  * in the same breath is the same shape as the manifest guards that validated a
  * field and then let `extra` overwrite it. Over the cap means cut the HOW.
+ *
+ * Hai trần từ 2.2.1 (owner chốt 07/11). Trần cứng 2 KB làm dispatcher viết lại brief
+ * ngay lúc bắn, và vòng viết lại đó tốn token Claude hơn chính mấy trăm byte thừa —
+ * luật sinh ra để đỡ token lại đốt token. Giờ: trên BRIEF_SOFT_BYTES job vẫn chạy,
+ * adapter ghi `briefBytes` + note vào sổ, collect gắn cờ `BRIEF DÀI` để còn thấy mà
+ * chỉnh dần; trên MAX_BRIEF_BYTES mới từ chối — cỡ đó là đang kê thuật toán hộ worker
+ * (ca 7,2 KB ngày 24/08). Vẫn không có cờ bỏ qua.
  */
-export const MAX_BRIEF_BYTES = 2048;
+export const BRIEF_SOFT_BYTES = 2048;
+export const MAX_BRIEF_BYTES = 8192;
 
 /**
  * Env vars a worker must never inherit, and must not be able to set for itself.
@@ -437,6 +445,26 @@ export function readPrompt({ prompt, promptFile }) {
   const text = (prompt ?? "").trim();
   if (!text) throw new GuardError("--prompt or --prompt-file is required");
   return assertBriefFits(text, "--prompt");
+}
+
+/**
+ * Số byte của brief (đã trim) đúng như `readPrompt` đo, hoặc null khi không đọc
+ * được — adapter dùng để ghi sổ, không bao giờ ném: lỗi thật để readPrompt báo.
+ */
+export function briefSize({ prompt, promptFile }) {
+  try {
+    const text = promptFile ? readFileSync(resolve(promptFile), "utf8").trim() : String(prompt ?? "").trim();
+    return text ? Buffer.byteLength(text, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Note cho job có brief quá trần mềm, hoặc null. */
+export function longBriefNote(bytes) {
+  return bytes != null && bytes > BRIEF_SOFT_BYTES
+    ? `brief ${bytes} byte, quá trần mềm ${BRIEF_SOFT_BYTES} — lần sau tách bối cảnh ra file trong thư mục run, brief chỉ trỏ tới`
+    : null;
 }
 
 /** Measured in bytes, not characters: Vietnamese briefs run ~1.15 bytes/char. */

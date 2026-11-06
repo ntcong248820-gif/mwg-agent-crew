@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileS
 import { basename, resolve, dirname, relative, join } from "node:path";
 import { readManifest, updateJob, updateManifest, appendNote, taskRel } from "./crew-manifest.mjs";
 import { layoutOf, reportDirRel, usesTask } from "./lib/crew-layout.mjs";
-import { evidenceDigest, readWorkerStatus, CREDENTIAL_STORE_DIR } from "./crew-guards.mjs";
+import { evidenceDigest, readWorkerStatus, BRIEF_SOFT_BYTES, CREDENTIAL_STORE_DIR } from "./crew-guards.mjs";
 import { reconcileRun, resolveEvidence } from "./crew-reconcile.mjs";
 import { collectWriteScope, headMovement } from "./crew-scope.mjs";
 import { costGateKind, ensureCostGateHold, failedHoldFor, failedHoldVerdict, quotaApiName, extractCostGateApi, holdFor, holdVerdict, liveJobs } from "./lib/holds.mjs";
@@ -205,6 +205,9 @@ function judgeOne(job, workspace, now, manifestVersion) {
     row.flags.push("FULL-ACCESS");
   }
   if (job.chat) row.flags.push("CHAT");
+  // Brief quá trần mềm: job vẫn được chấm như thường, cờ chỉ để dispatcher thấy mà
+  // viết gọn lần sau. Không vào `violation`, không vào WARN (không cần đọc evidence).
+  if (job.briefBytes > BRIEF_SOFT_BYTES) row.flags.push("BRIEF DÀI");
 
   const evidenceAbs = resolveEvidence(job, workspace);
 
