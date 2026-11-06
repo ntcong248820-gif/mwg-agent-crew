@@ -29,7 +29,7 @@ là mất đường đó:
 | --- | --- | --- |
 | Antigravity | CLI `agy` (headless) và/hoặc `agentapi` (app mode) | `agy --version` |
 | Codex headless | CLI `codex` | `codex --version` |
-| Codex app | thêm plugin Claude Code `openai-codex` (chứa `codex-companion.mjs`) | `crew doctor` |
+| Codex app | Bỏ từ 2.0.4 — Codex chỉ chạy headless, không cần cài thêm | — |
 
 ## 3. Cài plugin
 
@@ -91,7 +91,11 @@ routing gate chỉ nói khi owner gõ `@anti`/`@codex`.
 Chưa khai mục tiêu ở `CLAUDE.md` vẫn chạy được — crew sẽ nói thẳng là nó đang xếp ưu
 tiên mà không có mục tiêu để bám, thay vì tự bịa ra một cái.
 
-## 6. Codex app mode (tùy chọn)
+## 6. Codex app mode (bỏ từ 2.0.4)
+
+`crew add-job --worker codex --transport app` và `codex-run.mjs --mode app` bị từ chối từ
+2.0.4; làm tiếp thread thì `crew run codex --resume <conversationId>` ở headless. Phần dưới
+chỉ còn để hiểu run cũ.
 
 App mode đi qua `codex-companion.mjs` của plugin `openai-codex`. Crew tìm nó ở:
 

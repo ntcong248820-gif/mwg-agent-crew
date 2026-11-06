@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { createRun, addJob, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
-import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { CODEX_APP_DRIVER, FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const t = makeChecker("codex-resume");
 const ADAPTER = join(MODULE_ROOT, "scripts", "codex-run.mjs");
@@ -187,16 +187,18 @@ const plain = argvOf(plainEv);
 }
 
 // --- app mode: the target check that runs BEFORE anything is dispatched ------
+//
+// The entry refuses `--mode app` for Codex since 2.0.4, so these drive
+// `codexRunApp` through the test driver for as long as the function exists.
 
-function runApp({ evidence, resume, candidate, argvOut, dispatchThread, manifest, job }) {
+function runApp({ evidence, resume, candidate, argvOut, dispatchThread }) {
   const proc = spawnSync("node", [
-    ADAPTER,
+    CODEX_APP_DRIVER,
     "--prompt-file", brief,
     "--evidence", evidence,
     "--workspace", ws,
     "--timeout", "60s",
     "--mode", "app",
-    ...(manifest ? ["--manifest", manifest, "--job", String(job)] : []),
     ...(resume ? ["--resume", resume] : []),
   ], {
     encoding: "utf8",
@@ -219,7 +221,7 @@ function runApp({ evidence, resume, candidate, argvOut, dispatchThread, manifest
     },
     timeout: 90_000,
   });
-  return { exit: proc.status, stderr: proc.stderr ?? "" };
+  return { exit: proc.status, stderr: proc.stderr ?? "", stdout: proc.stdout ?? "" };
 }
 
 {
@@ -288,30 +290,24 @@ function runApp({ evidence, resume, candidate, argvOut, dispatchThread, manifest
   // this phase exists to prevent is recorded as a clean success. Anti and Codex
   // headless both check afterwards; app mode was the gap.
   const evidence = join(RUN_DIR_REL, "app-window-changed.md");
-  const manifest = setupManifest("m5", evidence, "app");
   const r = runApp({
     evidence, resume: "01a0-match", candidate: "01a0-match",
-    dispatchThread: "01a0-drifted", manifest, job: 1,
+    dispatchThread: "01a0-drifted",
   });
   t.check("a thread that drifted after the check is caught", r.exit !== 0, true);
   t.check("...naming both threads",
     /01a0-match/.test(r.stderr) && /01a0-drifted/.test(r.stderr), true);
-  const jobRec = readManifest(manifest).jobs[0];
-  t.check("...and the manifest records both", [jobRec.resumedFrom, jobRec.conversationId],
+  const out = JSON.parse(r.stdout);
+  t.check("...and the result records both", [out.resumedFrom, out.conversationId],
     ["01a0-match", "01a0-drifted"]);
-  t.check("...marked mismatched", jobRec.resumeMismatch, true);
+  t.check("...marked mismatched", out.resumeMismatch, true);
 }
 
-function setupManifest(name, evidence, transport) {
+function setupManifest(name, evidence) {
   const runDir = join(ws, RUN_DIR_REL, name);
   mkdirSync(runDir, { recursive: true });
   const { manifestPath } = createRun({ runDir, runId: `crew-${name}`, task: "t", workspace: ws, depth: 0 });
-  // The adapter refuses when the manifest's transport disagrees with the flag,
-  // so an app-mode test has to declare it.
-  addJob(manifestPath, {
-    worker: "codex", role: "assist", title: name, evidence,
-    ...(transport ? { transport, note: "resume test: the app surface is what is under test" } : {}),
-  });
+  addJob(manifestPath, { worker: "codex", role: "assist", title: name, evidence });
   return manifestPath;
 }
 

@@ -1,12 +1,18 @@
 # Transport `app` và resume
 
-Đọc khi: job `app` (Anti hay Codex), job `--resume`, cần lệnh Monitor cho job dài, hoặc
-job app vừa báo fail ngay sau dispatch. Lõi `SKILL.md` Bước 3 và Bước 6 có bản tóm tắt;
+Đọc khi: job Anti `app`, job `--resume`, cần lệnh Monitor cho job dài, hoặc job app vừa
+báo fail ngay sau dispatch. Codex chỉ chạy headless từ 2.0.4; luật và số đo cũ của Codex
+app gom ở mục cuối *Lịch sử: Codex app*. Lõi `SKILL.md` Bước 3 và Bước 6 có bản tóm tắt;
 file này là luật đầy đủ. Nhật ký đo nằm ở `docs/transport-measurements.md` của plugin.
 
 ## Vì sao `app` là ngoại lệ
 
-Lõi `SKILL.md` Bước 3 liệt kê 3 ca được chọn `app`. Ngoài 3 ca đó, `app` là trả giá quan sát mà không lấy lại gì: đo 25/08 trên 6 job app
+**Codex không có `app` nữa** (từ 2.0.4): `crew add-job --worker codex --transport app` và
+`codex-run.mjs --mode app` đều bị từ chối, kèm hướng dẫn headless `--resume <conversationId>`.
+Run cũ có job Codex app vẫn collect/reconcile được; job Codex app còn `pending` thì bắn sẽ
+fail, làm lại bằng job headless mới.
+
+Lõi `SKILL.md` Bước 3 liệt kê 3 ca được chọn `app` (chỉ Anti). Ngoài 3 ca đó, `app` là trả giá quan sát mà không lấy lại gì: đo 25/08 trên 6 job app
 thật — Anti app không có `usage`/`response`, Codex app không watchdog và `exitCode: null`,
 và thread **không hiện live** (phải tắt/mở lại app mới thấy).
 
@@ -17,9 +23,8 @@ job `app` không nghỉ giữa hai lệnh thì **cả hai chết** ~15s — hai 
 gian, một job bị `status --wait` trả về không có field `status`, job kia bị báo
 `No job found` cho chính id vừa queue thành công. Bắn lại lệch 5 giây: 2/2 đậu.
 
-`codex-run.mjs` giờ **tự chịu** hai hình dạng đó trong 45s đầu (hỏi lại mỗi 3s) nên job
-không chết oan nữa, và số lần hỏi lại ghi vào manifest ở `settleRetries`. Vẫn nên giãn tay:
-khoan nhượng không miễn phí, mỗi lần hỏi lại là một vòng gọi process.
+Số đo đó là trên Codex app (nay đã bỏ, cách adapter từng tự chịu cuộc đua ở mục *Lịch
+sử*). Luật giãn 5 giây vẫn giữ cho job Anti app: rẻ, và chưa có số đo nào nói Anti miễn nhiễm.
 
 Điều đáng nhớ hơn: **worker vẫn làm xong việc** trong cả hai job "chết" đó — evidence đầy
 đủ, `Status: DONE`. `crew reconcile` sửa cả hai về `done`. Nên job app báo fail ngay
@@ -87,7 +92,7 @@ warning ở stderr rồi **exit 0 và mở conversation mới** — đo 22/09. N
 với id đã xin: lệch, hoặc agy không trả id nào, thì job bị `runtimeVerdict` và cổng
 `crew collect` bắt phải `--ack-runtime`. Manifest ghi `resumedFrom` + `resumeMismatch`.
 
-## Resume cho Codex (headless và app)
+## Resume cho Codex (headless)
 
 **Resume một job Codex headless** cũng là `--resume <id>`, id lấy ở `conversationId`
 của job trước — adapter bắt nó từ sự kiện `thread.started` và ghi vào manifest cho
@@ -95,51 +100,11 @@ của job trước — adapter bắt nó từ sự kiện `thread.started` và g
 không tồn tại (`no rollout found`), khác agy. Đo thật 23/09: job 2 bị cấm đọc file vẫn
 nhắc đúng chuỗi job 1 vừa ghi.
 
-**Resume một job Codex app** cũng `--resume <id>`, nhưng đọc kỹ hai điều:
+Thread do Codex app tạo trước 2.0.4 cũng tiếp được bằng đúng lệnh này
+(`crew run codex --resume <conversationId>`) — xem mục *Thread app resume được bằng headless*.
 
-- **Chỉ trong cùng phiên Claude** *(bằng app mode)*. Companion giữ job app theo phiên
-  và xoá khi phiên đóng. Nhưng thread thì **không** mất: nó nằm chung
-  `~/.codex/sessions/` với session headless, nên hôm sau vẫn tiếp được bằng
-  `--mode headless --resume <id>` (đo 23/09: tiếp được thread app tạo từ 25/08).
-  Đánh đổi: **mất phần nhìn**, job chạy ngầm không hiện trong app.
-- **Gặp "còn job Codex app khác đang chạy"** thì đợi job đó xong rồi bắn lại —
-  companion không tiếp thread khi còn task app dang dở.
-- **CLI không nhận thread id**, nó luôn tiếp "task mới nhất". Adapter hỏi trước và
-  **từ chối nếu lệch**, nên gặp lỗi `--resume asked for thread X but the companion
-  would continue Y` thì nghĩa là có job app khác mới hơn: bắn job này sau job đó,
-  hoặc resume bằng headless.
-
-Cả 4 bề mặt đều ghi `resumedFrom` vào manifest, và đều so lại id sau khi chạy —
+Các bề mặt resume đều ghi `resumedFrom` vào manifest, và đều so lại id sau khi chạy —
 lệch thì `resumeMismatch` + cổng `crew collect` bắt `--ack-runtime`.
-
-## Resume cho Codex app — guard tiền-kiểm (thêm 2026-09-23)
-
-Khác hẳn 3 ô kia: **CLI không nhận thread id.** `--resume` của companion chỉ là
-alias boolean của `--resume-last`, và nó tự chọn "task resumable mới nhất của phiên
-Claude này". `max_parallel` là 3, nên "mới nhất" là một cuộc đua — mà gửi tiếp vào
-thread của job khác thì không rút lại được.
-
-Nên adapter hỏi trước bằng `task-resume-candidate --json` (có trong bảng dispatch
-của companion, không có trong `--help`), so `threadId` với id đã xin, **lệch thì từ
-chối trước khi gửi**. Từ chối xảy ra trước cả lúc ghi file prompt: một refusal để
-lại sidecar sẽ chặn đúng lần thử lại mà chính thông báo lỗi của nó khuyên làm.
-
-Vì sao không import `runAppServerTurn` (hàm nội bộ companion, *có* nhận id): không
-phải vì CLI bền hơn hàm nội bộ, mà vì **hướng hỏng**. Mọi cách probe sai đều dẫn tới
-*từ chối*; còn một tham số `resumeThreadId` bị đổi tên âm thầm dẫn tới *gửi vào
-thread lạ*.
-
-Guard **thu hẹp chứ không đóng** cửa sổ: ứng viên có thể đổi giữa lúc kiểm và lúc
-gửi. Nên sau khi chạy còn so lại `job.threadId` với id đã xin — giống hệt Anti và
-Codex headless. Không có phép so đó thì đúng lỗi phase này sinh ra để chặn, khi nó
-lọt, lại được ghi thành một lần thành công sạch.
-
-**Owner chốt 23/09: không chặn.** Lý do là cửa sổ hẹp hơn tưởng — companion **tự
-từ chối** khi còn job app khác đang chạy (`Task <id> is still running`), nên chỉ
-còn đúng một ca lọt: một job chuyển từ đang-chạy sang xong *vừa khít* trong 1-2
-giây giữa lúc kiểm và lúc gửi. Chặn thêm chỉ bịt được ca đó, đổi lại mất resume
-app suốt lúc run bận. Ca companion từ chối giờ được **dịch lại** thành câu đọc
-được thay vì trả nguyên văn lỗi của project khác.
 
 ## Thread app resume được bằng headless (đo 2026-09-23)
 
@@ -147,9 +112,9 @@ Thread do app tạo nằm **chung `~/.codex/sessions/`** với session `exec`. �
 `codex exec resume --all <thread-app>` tiếp được một thread app tạo từ 25/08 và nó
 nhắc đúng việc hôm đó. Cần `--all` khi resume từ thư mục khác thư mục lúc tạo.
 
-Đây là **đường duy nhất tiếp một thread app qua phiên Claude khác** — companion
-xoá job app khi phiên đóng, còn rollout thì không bị xoá. Đổi lại **mất phần
-nhìn**: job chạy ngầm, không hiện trong app nữa. Dùng khi cần trí nhớ hơn cần xem.
+Nên thread Codex app cũ không mất theo transport: companion xoá job app khi phiên
+đóng, còn rollout thì không. Job chạy ngầm, không hiện trong app — điều mà Codex app
+cũng chưa từng làm tốt (không hiện live).
 
 ## Cờ không đọc được thì phải từ chối, không được im (thêm 2026-09-23)
 
@@ -181,10 +146,9 @@ ghi transport vào đó là ghi một box chat chưa từng mở.
 | Transport | Cơ chế | Có stdout? |
 | --- | --- | --- |
 | `headless` | Anti: `agy -p --output-format json`. Codex: `codex exec` | **Có** — trả về Claude |
-| `app` | Anti: `agentapi new-conversation` (hoặc `send-message` khi có `--resume`, xem mục Resume ở trên) → session **hiện trong Antigravity 2.0**; adapter poll bằng file evidence. Codex: `codex-run.mjs --mode app` → companion `task --background` → thread **hiện trong app Codex**, tên `Codex Companion Task: {dòng đầu brief}`; chờ bằng `status --wait`. Cả hai đã kiểm bằng mắt 25/08 | Anti **không**; Codex **có** (`result <job-id>`) |
+| `app` (chỉ Anti) | `agentapi new-conversation` (hoặc `send-message` khi có `--resume`, xem mục Resume ở trên) → session **hiện trong Antigravity 2.0**; adapter poll bằng file evidence. Đã kiểm bằng mắt 25/08 | **Không** |
 
-Hai runtime lệch nhau chỗ stdout — đừng suy từ Anti sang Codex. Cả hai đều lấy **file
-evidence** làm phán quyết, stdout chỉ là tiện.
+Mọi transport đều lấy **file evidence** làm phán quyết, stdout chỉ là tiện.
 
 ## Đo được về app mode (2026-08-19)
 
@@ -200,34 +164,6 @@ Hệ quả khi dùng app mode:
 - Job app từng dừng hẳn sau 1 tool call mà không ghi gì (conversation 6 step, không có
   error, không có permission blob). Evidence gate bắt được. Đừng giao việc bắt buộc phải
   ra file cho app mode nếu không ai ngồi xem.
-
-## Codex `app`: thread trong app
-
-`--mode app` mở **thread thật trong app Codex** qua `codex-companion.mjs` của plugin, rồi
-chờ bằng `status --wait` (có tín hiệu hoàn thành thật, không phải poll đoán). Thread id
-được ghi vào `conversationId` của manifest. Đánh đổi: **không** watchdog, `exitCode: null`,
-và thread **không hiện live** — rollout lên đĩa sau ~8s nhưng phải tắt/mở lại app mới thấy.
-
-Thread hiện trong app với tên `Codex Companion Task: {dòng đầu brief}` — companion lấy
-dòng đầu làm `summary`. Field `title` trong JSON luôn là `"Codex Task"`, **nhưng đó không
-phải cái app hiển thị**. Vẫn nên để **dòng đầu mỗi brief là title của job**, nếu không 3
-thread song song trông y như nhau.
-
-Companion nằm ngoài repo. Máy nào không có bản marketplace thì đặt
-`CREW_CODEX_COMPANION` (tên cũ `MWG_CODEX_COMPANION` vẫn nhận) trỏ tới đường tuyệt đối. Không tìm thấy thì adapter **báo lỗi**,
-không âm thầm rơi về headless.
-
-Hệ quả vận hành, khác nhau rõ giữa hai runtime:
-
-| | Anti app | Codex app |
-| --- | --- | --- |
-| Xem tiến trình lúc job chạy | **Được** — session hiện live trong Antigravity 2.0 | **Không** |
-| Mở lại sau khi xong | được | được, nhưng phải restart app; hoặc `codex resume <id>` |
-| Can thiệp giữa chừng | được | không |
-
-Nên với Codex, `transport: app` mua được **biên bản mở lại được + `conversationId` làm
-provenance**, không mua được **mặt điều khiển**. Đừng chọn `app` cho Codex vì nghĩ sẽ
-ngồi xem được.
 
 ## Heartbeat cho job dài
 
@@ -285,3 +221,91 @@ Số đo nền trên app thật (04/10, `flash`; run đo hạ ngưỡng còn `--
   `state` một mình làm tín hiệu xong; adapter còn đợi file evidence.
 
 Chưa đo: job treo thật (kẹt prompt permission), và model `pro` nghĩ lâu giữa các bước.
+
+## Lịch sử: Codex app (bỏ từ 2.0.4)
+
+Owner chốt 06/11: Codex app không chat tiếp được, không xem live, không watchdog,
+`exitCode: null` — không đáng giữ. Ca duy nhất nó từng che ("làm tiếp buổi sau")
+headless `--resume <conversationId>` làm tốt hơn. `codexRunApp` còn trong source nhưng
+không có cửa vào từ CLI, chờ xoá. Phần dưới giữ lại số đo và luật cũ để đọc run cũ.
+
+**Cuộc đua lúc dispatch.** `codex-run.mjs --mode app` từng tự chịu hai hình dạng chết
+oan (`status --wait` không có `status`, `No job found` cho id vừa queue) trong 45s đầu,
+hỏi lại mỗi 3s, ghi số lần ở `settleRetries`.
+
+**Transport.** `codex-run.mjs --mode app` → companion `task --background` → thread
+**hiện trong app Codex**, tên `Codex Companion Task: {dòng đầu brief}`; chờ bằng
+`status --wait`. Có stdout (`result <job-id>`). Kiểm bằng mắt 25/08.
+
+### Resume một job Codex app
+
+Cũng `--resume <id>`, với các điều kiện:
+
+- **Chỉ trong cùng phiên Claude** *(bằng app mode)*. Companion giữ job app theo phiên
+  và xoá khi phiên đóng. Nhưng thread thì **không** mất: nó nằm chung
+  `~/.codex/sessions/` với session headless, nên hôm sau vẫn tiếp được bằng
+  `--mode headless --resume <id>` (đo 23/09: tiếp được thread app tạo từ 25/08).
+  Đánh đổi: **mất phần nhìn**, job chạy ngầm không hiện trong app.
+- **Gặp "còn job Codex app khác đang chạy"** thì đợi job đó xong rồi bắn lại —
+  companion không tiếp thread khi còn task app dang dở.
+- **CLI không nhận thread id**, nó luôn tiếp "task mới nhất". Adapter hỏi trước và
+  **từ chối nếu lệch**, nên gặp lỗi `--resume asked for thread X but the companion
+  would continue Y` thì nghĩa là có job app khác mới hơn: bắn job này sau job đó,
+  hoặc resume bằng headless.
+
+### Guard tiền-kiểm (thêm 2026-09-23)
+
+Khác hẳn các bề mặt khác: **CLI không nhận thread id.** `--resume` của companion chỉ là
+alias boolean của `--resume-last`, và nó tự chọn "task resumable mới nhất của phiên
+Claude này". `max_parallel` là 3, nên "mới nhất" là một cuộc đua — mà gửi tiếp vào
+thread của job khác thì không rút lại được.
+
+Nên adapter hỏi trước bằng `task-resume-candidate --json` (có trong bảng dispatch
+của companion, không có trong `--help`), so `threadId` với id đã xin, **lệch thì từ
+chối trước khi gửi**. Từ chối xảy ra trước cả lúc ghi file prompt: một refusal để
+lại sidecar sẽ chặn đúng lần thử lại mà chính thông báo lỗi của nó khuyên làm.
+
+Vì sao không import `runAppServerTurn` (hàm nội bộ companion, *có* nhận id): không
+phải vì CLI bền hơn hàm nội bộ, mà vì **hướng hỏng**. Mọi cách probe sai đều dẫn tới
+*từ chối*; còn một tham số `resumeThreadId` bị đổi tên âm thầm dẫn tới *gửi vào
+thread lạ*.
+
+Guard **thu hẹp chứ không đóng** cửa sổ: ứng viên có thể đổi giữa lúc kiểm và lúc
+gửi. Nên sau khi chạy còn so lại `job.threadId` với id đã xin — giống hệt Anti và
+Codex headless. Không có phép so đó thì đúng lỗi phase này sinh ra để chặn, khi nó
+lọt, lại được ghi thành một lần thành công sạch.
+
+**Owner chốt 23/09: không chặn.** Lý do là cửa sổ hẹp hơn tưởng — companion **tự
+từ chối** khi còn job app khác đang chạy (`Task <id> is still running`), nên chỉ
+còn đúng một ca lọt: một job chuyển từ đang-chạy sang xong *vừa khít* trong 1-2
+giây giữa lúc kiểm và lúc gửi. Chặn thêm chỉ bịt được ca đó, đổi lại mất resume
+app suốt lúc run bận. Ca companion từ chối giờ được **dịch lại** thành câu đọc
+được thay vì trả nguyên văn lỗi của project khác.
+
+### Thread trong app
+
+`--mode app` mở **thread thật trong app Codex** qua `codex-companion.mjs` của plugin, rồi
+chờ bằng `status --wait` (có tín hiệu hoàn thành thật, không phải poll đoán). Thread id
+được ghi vào `conversationId` của manifest. Đánh đổi: **không** watchdog, `exitCode: null`,
+và thread **không hiện live** — rollout lên đĩa sau ~8s nhưng phải tắt/mở lại app mới thấy.
+
+Thread hiện trong app với tên `Codex Companion Task: {dòng đầu brief}` — companion lấy
+dòng đầu làm `summary`. Field `title` trong JSON luôn là `"Codex Task"`, **nhưng đó không
+phải cái app hiển thị**. Vẫn nên để **dòng đầu mỗi brief là title của job**, nếu không 3
+thread song song trông y như nhau.
+
+Companion nằm ngoài repo. Máy nào không có bản marketplace thì đặt
+`CREW_CODEX_COMPANION` (tên cũ `MWG_CODEX_COMPANION` vẫn nhận) trỏ tới đường tuyệt đối. Không tìm thấy thì adapter **báo lỗi**,
+không âm thầm rơi về headless.
+
+Hệ quả vận hành, khác nhau rõ giữa hai runtime:
+
+| | Anti app | Codex app |
+| --- | --- | --- |
+| Xem tiến trình lúc job chạy | **Được** — session hiện live trong Antigravity 2.0 | **Không** |
+| Mở lại sau khi xong | được | được, nhưng phải restart app; hoặc `codex resume <id>` |
+| Can thiệp giữa chừng | được | không |
+
+Nên với Codex, `transport: app` mua được **biên bản mở lại được + `conversationId` làm
+provenance**, không mua được **mặt điều khiển**. Đừng chọn `app` cho Codex vì nghĩ sẽ
+ngồi xem được.

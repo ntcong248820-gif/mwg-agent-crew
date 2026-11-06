@@ -1057,6 +1057,10 @@ async function waitForSettle(companion, jobId, { workspace, timeoutMs }) {
   }
 }
 
+/**
+ * Không reachable từ CLI từ 2.0.4: entry chặn `--mode app` và `crew add-job`
+ * không tạo job Codex app nữa. Giữ lại cho tới khi xoá hẳn; test gọi thẳng hàm.
+ */
 export async function codexRunApp(options) {
   // Only the escalation is refused, not the flag. Mirrors --workspace-cli
   // below, which accepts `off` and refuses `on`: a dispatcher template that
@@ -1327,7 +1331,8 @@ function knownFlagSpellings(alias) {
   return [...KNOWN_FLAGS].map((key) => `--${cliName[key] ?? key}`);
 }
 
-function parseArgv(argv) {
+/** Exported so the test driver for the retired app path parses flags the same way. */
+export function parseArgv(argv) {
   const out = {};
   const alias = {
     "prompt-file": "promptFile", "idle-timeout": "idle",
@@ -1352,7 +1357,7 @@ function parseArgv(argv) {
 }
 
 /** Exit 3: the job finished but a human has to look before it counts. */
-function needsHuman(result) {
+export function needsHuman(result) {
   return Boolean(result.runtimeVerdict)
     || result.status === "done_unverified"
     || result.status === "blocked"
@@ -1471,9 +1476,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   try {
     opts = parseArgv(process.argv.slice(2));
+    // Refused before anything else and whether or not a manifest came with it:
+    // a check inside the manifest branch would leave the adapter run by hand as
+    // a way back to the transport. `mode` stays "headless" here, so the failure
+    // path below does not take a runtime reading for an app job that never ran.
+    if (opts.mode === "app") {
+      const { CODEX_HEADLESS_ONLY } = await import("./crew-manifest.mjs");
+      throw new CodexRunError(CODEX_HEADLESS_ONLY);
+    }
     mode = opts.mode ?? "headless";
     if (!MODES.has(mode)) {
-      throw new CodexRunError(`unknown mode "${mode}"`, `use one of: ${[...MODES].join(", ")}`);
+      throw new CodexRunError(`unknown mode "${mode}"`, "use --mode headless");
     }
     // Recorded before the job spawns, not after it returns. A job that is still
     // working has no result to write, so without this the manifest showed it as

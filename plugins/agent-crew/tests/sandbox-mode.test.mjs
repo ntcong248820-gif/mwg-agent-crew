@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRun, addJob, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
-import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { CODEX_APP_DRIVER, FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const t = makeChecker("sandbox-mode");
 const ADAPTER = join(MODULE_ROOT, "scripts", "codex-run.mjs");
@@ -33,9 +33,9 @@ const RUN_DIR_REL = join("tasks", "t", "reports", "crew-test");
 mkdirSync(join(ws, RUN_DIR_REL), { recursive: true });
 const brief = writeFile(join(ws, "brief.md"), "do the thing\n");
 
-function run({ evidence, extra = [], env = {}, mode = "argvdump" }) {
+function run({ evidence, extra = [], env = {}, mode = "argvdump", adapter = ADAPTER }) {
   const proc = spawnSync("node", [
-    ADAPTER,
+    adapter,
     "--prompt-file", brief,
     "--evidence", evidence,
     "--workspace", ws,
@@ -135,7 +135,8 @@ const ranNothing = (evidence) => !existsSync(join(ws, evidence));
   // well. The app sandboxes dispatched tasks itself, so accepting this flag
   // would hand back a job that looks unsandboxed and is not.
   const evidence = join(RUN_DIR_REL, "appmode.md");
-  const r = run({ evidence, extra: ["--mode", "app", "--sandbox-mode", "danger-full-access"] });
+  // The entry refuses Codex app since 2.0.4; the driver still reaches codexRunApp.
+  const r = run({ evidence, adapter: CODEX_APP_DRIVER, extra: ["--mode", "app", "--sandbox-mode", "danger-full-access"] });
   t.check("app mode refuses the flag", r.exit !== 0, true);
   t.check("...and explains the app decides, not this adapter", /app sandboxes dispatched tasks/.test(r.stderr), true);
   t.check("...and points at the transport that works", /--mode headless/.test(r.stderr), true);
@@ -255,7 +256,7 @@ function newRun(name) {
   // break every app job -- and telling it "use headless for full permissions"
   // when it asked for the default would answer a question it never asked.
   const evidence = join(RUN_DIR_REL, "app-default.md");
-  const r = run({ evidence, extra: ["--mode", "app", "--sandbox-mode", "workspace-write"] });
+  const r = run({ evidence, adapter: CODEX_APP_DRIVER, extra: ["--mode", "app", "--sandbox-mode", "workspace-write"] });
   // The app path fails here for its own reasons (no companion in the fixture
   // environment); all this asserts is that the sandbox check is not the one
   // stopping it.

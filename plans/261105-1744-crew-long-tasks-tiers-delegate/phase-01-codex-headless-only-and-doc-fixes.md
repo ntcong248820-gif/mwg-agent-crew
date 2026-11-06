@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Codex chỉ headless + sửa doc lệch"
-status: pending
+status: completed
 priority: P1
 effort: "3h"
 dependencies: []
@@ -37,14 +37,21 @@ dependencies: []
 
 ## Tasks & Steps
 
-1. [ ] Sửa `resolveRouting` + câu lỗi; chạy `node plugins/agent-crew/tests/collect-gate.test.mjs` thấy đỏ đúng chỗ.
-2. [ ] Chặn `--mode app` ở entry `codex-run.mjs`.
-3. [ ] Thêm `seedLegacyJob` vào `tests/helpers.mjs`; chuyển 3 test lifecycle sang dùng nó.
-4. [ ] Cập nhật test `collect-gate` dòng 756-760.
-5. [ ] Sửa 6 file doc ở trên.
-6. [ ] Kiểm collect/reconcile một manifest có job Codex app `done` cũ vẫn ra verdict như trước (test trong `collect-gate`).
-7. [ ] Test: `node plugins/agent-crew/scripts/codex-run.mjs --mode app ...` không kèm `--manifest` cũng bị từ chối.
-8. [ ] Bump 2.0.4, owner update plugin (`/plugin` → update `agent-crew@agent-crew-marketplace`), `diff -rq` bản cài với source rỗng (trừ `.in_use`).
+1. [x] Sửa `resolveRouting` + câu lỗi; chạy `node plugins/agent-crew/tests/collect-gate.test.mjs` thấy đỏ đúng chỗ.
+2. [x] Chặn `--mode app` ở entry `codex-run.mjs`.
+3. [x] Thêm `seedLegacyJob` vào `tests/helpers.mjs`; chuyển 3 test lifecycle sang dùng nó.
+4. [x] Cập nhật test `collect-gate` dòng 756-760.
+5. [x] Sửa 6 file doc ở trên.
+6. [x] Kiểm collect/reconcile một manifest có job Codex app `done` cũ vẫn ra verdict như trước (test trong `collect-gate`).
+7. [x] Test: `node plugins/agent-crew/scripts/codex-run.mjs --mode app ...` không kèm `--manifest` cũng bị từ chối.
+8. [x] Bump 2.0.4. Owner update plugin (`/plugin` → update `agent-crew@agent-crew-marketplace`), `diff -rq` bản cài với source rỗng (trừ `.in_use`) — việc của owner, chưa làm lúc đóng phase.
+
+## Ghi chú khi cook (2026-11-06)
+
+- Ngoài 3 chỗ test liệt kê, đường app còn bị gọi qua CLI ở `codex-resume`, `resume-gate`, `sandbox-mode`, `workspace-cli-auth`. Entry chặn vô điều kiện nên các test đó chạy `codexRunApp` qua driver test `tests/fixtures/codex-app-legacy-driver.mjs` (cùng `parseArgv`/`needsHuman`, giờ export). Assert phía manifest của đường app (không còn reachable) đổi thành assert trên kết quả JSON, hoặc thay bằng test job app cũ `pending` bị từ chối và ghi `failed`.
+- Mục lịch sử trong `transport-va-resume.md` đặt tên "bỏ từ 2.0.4" (bản thật sự chặn), không phải 2.1.0.
+- Sửa thêm `README.md`/`INSTALL.md` của plugin: chỗ mô tả `--mode app` cho Codex ghi đã bỏ từ 2.0.4.
+- Thêm test CLI `crew add-job --worker codex --transport app` → exit ≠ 0, không ghi job.
 
 ## Verification
 

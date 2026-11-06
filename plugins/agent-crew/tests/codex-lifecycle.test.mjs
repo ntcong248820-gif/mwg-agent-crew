@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createRun, addJob, claimRunSlot, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
-import { FIXTURE_BIN, FIXTURES, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { CODEX_APP_DRIVER, FIXTURE_BIN, FIXTURES, MODULE_ROOT, makeChecker, seedLegacyJob, tmpWorkspace, writeFile } from "./helpers.mjs";
 import { DEFAULT_LAYOUT, LEGACY_LAYOUT } from "../scripts/lib/crew-layout.mjs";
 
 const t = makeChecker("codex-lifecycle");
@@ -156,16 +156,49 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   t.check("...while the history stays in notes", after.notes.length > 0, "true");
 }
 
+// --- Codex is headless only: the entry refuses the app transport -----------
+{
+  // Refused at the top of the entry, not inside the manifest branch: a check
+  // that only fired with --manifest would leave the adapter run by hand as a
+  // way back to the transport.
+  const bare = run({ mode: "ok", evidence: join(RUN_DIR_REL, "app-by-hand.md"), extra: ["--mode", "app"] });
+  t.check("--mode app with no manifest is refused", bare.exit, 1);
+  t.check("...pointing at headless --resume", bare.stderr.includes("--resume <conversationId>"), "true");
+  t.check("...and nothing ran", existsSync(join(ws, RUN_DIR_REL, "app-by-hand.md")), "false");
+
+  // A run from before 2.0.4 can still hold a pending Codex app job. Dispatching
+  // it fails, on the record, with the way to redo it -- not silently as headless.
+  const dir = join(ws, RUN_DIR_REL, "legacy-app-pending");
+  const { manifestPath: mp } = createRun({ runDir: dir, runId: "legacy-app", task: "t", workspace: ws, depth: 0 });
+  seedLegacyJob(mp, {
+    worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau",
+    title: "legacy app", evidence: join(RUN_DIR_REL, "legacy-app-pending", "w.md"),
+  });
+  const legacy = run({
+    mode: "ok", evidence: join(RUN_DIR_REL, "legacy-app-pending", "w.md"),
+    extra: ["--mode", "app", "--manifest", mp, "--job", "1"],
+  });
+  const job = readManifest(mp).jobs[0];
+  t.check("a legacy pending codex app job is refused at dispatch", legacy.exit, 1);
+  t.check("...recorded as failed", job.status, "failed");
+  t.check("...with the headless way to redo it", job.failure.includes("Codex chỉ chạy headless"), "true");
+  t.check("...and the record it came from left as it was", job.transport, "app");
+  t.check("...with nothing written at the evidence path", existsSync(join(ws, RUN_DIR_REL, "legacy-app-pending", "w.md")), "false");
+}
+
 // --- the app transport: a real thread in the Codex app, faked ---------------
 {
   // The fake exists because these shapes cannot be produced on demand by the
   // real companion, and because a test that opens real threads costs tokens.
   // Every case below is a way the transport could fail without saying so.
+  // The entry no longer reaches `codexRunApp`, so these drive it through the
+  // test driver until the function itself is deleted; the manifest side of the
+  // app path is unreachable and is covered by the refusal above instead.
   const FAKE = join(FIXTURES, "fake-companion.mjs");
 
   const runApp = ({ mode, evidence, body = DONE_BODY, extra = [], companion = FAKE, marker = null, timeoutSec = 20, result = null, race = null, raceState = null }) => {
     const proc = spawnSync("node", [
-      ADAPTER,
+      CODEX_APP_DRIVER,
       "--mode", "app",
       "--prompt-file", brief,
       "--evidence", evidence,
@@ -231,23 +264,13 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   // A job that outlives its allowance must be cancelled, not left running
   // against a workspace nobody is watching.
   const marker = join(ws, "cancel-marker.txt");
-  const mfDir = join(ws, RUN_DIR_REL, "app-timeout-case");
-  const { manifestPath: tmp } = createRun({ runDir: mfDir, runId: "app-to", task: "t", workspace: ws, depth: 0 });
-  addJob(tmp, {
-    worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau",
-    title: "app timeout",
-    evidence: join(RUN_DIR_REL, "app-timeout-case", "late.md"),
-  });
   const timedOut = runApp({
     mode: "timeout", body: "", marker,
     evidence: join(RUN_DIR_REL, "app-timeout-case", "late.md"),
-    extra: ["--manifest", tmp, "--job", "1"],
   });
   t.check("a job that never settles fails", timedOut.exit, 1);
   t.check("...and cancel was actually called", readFileSync(marker, "utf8").includes("cancel"), "true");
-  const toJob = readManifest(tmp).jobs[0];
-  t.check("...with a failure the manifest can show", Boolean(toJob.failure), "true");
-  t.check("...naming the transport that stalled", toJob.failure.includes("companion job did not settle"), "true");
+  t.check("...naming the transport that stalled", timedOut.stderr.includes("companion job did not settle"), "true");
 
   // The other way a job goes unwatched: not "it never settled" but "the call
   // that was watching it died". Cancel used to be reachable only through a
@@ -255,20 +278,12 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   // it -- still writing, still spending.
   const deadMarker = join(ws, "marker-status-dead.txt");
   writeFileSync(deadMarker, "");
-  const { manifestPath: dmf } = createRun({ runDir: join(ws, "mf-dead"), runId: "app-dead", task: "t", workspace: ws, depth: 0 });
-  addJob(dmf, {
-    worker: "codex", role: "assist", transport: "app", title: "app status dead",
-    note: "ca thử: mất dấu job app giữa đường",
-    evidence: join(RUN_DIR_REL, "app-dead-case", "x.md"),
-  });
   const dead = runApp({
     mode: "status_dead", body: "", marker: deadMarker,
     evidence: join(RUN_DIR_REL, "app-dead-case", "x.md"),
-    extra: ["--manifest", dmf, "--job", "1"],
   });
   t.check("a job whose status call dies fails", dead.exit, 1);
   t.check("...and is cancelled rather than abandoned", readFileSync(deadMarker, "utf8").includes("cancel"), "true");
-  t.check("...with the death recorded in the manifest", readManifest(dmf).jobs[0].status, "failed");
 
   // --- the adapter's own death ---------------------------------------------
   // This adapter exists so that a death gets recorded instead of reading as
@@ -355,7 +370,9 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   // as one transport and fired down the other is worse than no record at all.
   const dir = join(ws, RUN_DIR_REL, "transport-clash");
   const { manifestPath: mp } = createRun({ runDir: dir, runId: "clash", task: "t", workspace: ws, depth: 0 });
-  addJob(mp, {
+  // Seeded as a legacy record: `addJob` no longer files Codex as app, but a run
+  // from before that still can, and the clash check has to keep reading it.
+  seedLegacyJob(mp, {
     worker: "codex", role: "owner", transport: "app", note: "việc khám phá, chưa viết nổi acceptance",
     title: "filed as app",
     evidence: join(RUN_DIR_REL, "transport-clash", "w.md"),
@@ -442,7 +459,7 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   const raceRun = ({ race, evidence, stateFile }) => {
     writeFile(stateFile, "0");
     const proc = spawnSync("node", [
-      ADAPTER, "--mode", "app", "--prompt-file", brief, "--evidence", evidence,
+      CODEX_APP_DRIVER, "--mode", "app", "--prompt-file", brief, "--evidence", evidence,
       "--workspace", ws, "--timeout", "20s", "--effort", "low",
     ], {
       encoding: "utf8",

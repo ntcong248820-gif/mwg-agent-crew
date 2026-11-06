@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import { resolveResume, GuardError } from "../scripts/crew-guards.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
-import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { CODEX_APP_DRIVER, FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const t = makeChecker("resume-gate");
 const CODEX = join(MODULE_ROOT, "scripts", "codex-run.mjs");
@@ -135,8 +135,9 @@ const throwsGuard = (fn) => {
 
 {
   // Codex app resumes as of Phase 4; only an empty id is refused by the gate.
+  // Driven through the test driver: the entry refuses Codex app since 2.0.4.
   const evidence = join(RUN_DIR_REL, "codex-app-empty.md");
-  const r = run(CODEX, { evidence, extra: ["--mode", "app", "--resume", ""] });
+  const r = run(CODEX_APP_DRIVER, { evidence, extra: ["--mode", "app", "--resume", ""] });
   t.check("codex app refuses an empty --resume at the gate",
     /--resume needs the id/.test(r.stderr), true);
   t.check("...and spawned nothing", ranNothing(evidence), true);
@@ -187,7 +188,7 @@ const throwsGuard = (fn) => {
   const cases = [
     { name: "anti headless --title", adapter: ANTI, extra: ["--title", "x"], flag: "--title" },
     { name: "anti app --agy-mode", adapter: ANTI, extra: ["--mode", "app", "--agy-mode", "plan"], flag: "--agy-mode" },
-    { name: "codex app --idle", adapter: CODEX, extra: ["--mode", "app", "--idle", "5m"], flag: "--idle" },
+    { name: "codex app --idle", adapter: CODEX_APP_DRIVER, extra: ["--mode", "app", "--idle", "5m"], flag: "--idle" },
   ];
   for (const c of cases) {
     const evidence = join(RUN_DIR_REL, `unsupported-${c.flag.replace(/-/g, "")}.md`);

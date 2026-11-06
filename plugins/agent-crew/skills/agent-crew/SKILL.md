@@ -174,13 +174,16 @@ Chọn worker rồi gán `role`, bằng đúng một câu hỏi:
 `role` quyết cách **chấm** output, không quyết transport. **Transport mặc định là
 `headless` cho cả hai role.**
 
-Chọn `app` chỉ trong 3 ca, và phải truyền `--note` nói ca nào:
+**Codex chỉ chạy `headless`.** `crew add-job --worker codex --transport app` bị từ chối:
+Codex app không chat tiếp được, không xem live, không watchdog. Cần thread làm tiếp thì
+headless `--resume <conversationId>` (xem Bước 6).
+
+`app` chỉ còn cho **Anti**, chỉ trong 3 ca, và phải truyền `--note` nói ca nào:
 
 1. Job Anti sẽ gặp **prompt permission cần người trả** — headless gặp prompt là
    silent-fail (`SUCCESS` + `response` rỗng).
 2. **Việc mở/khám phá, chưa viết nổi acceptance trước.**
-3. **Cần thread resume làm tiếp buổi sau** — chọn Anti app: Codex app chỉ resume được
-   trong cùng phiên Claude.
+3. **Cần thread resume làm tiếp buổi sau.**
 
 Job Anti `app` **không** trả output về stdout — đừng đặt một job assist vào `app`.
 Bảng đầy đủ và ví dụ hai chiều: `references/dispatch-playbook.md`.
@@ -205,7 +208,7 @@ hai job không bao giờ trùng file.
 | `--role` | Bắt buộc, `owner` \| `assist` |
 | `--model` | Bắt buộc với Anti và Claude. Tên lấy từ `crew doctor`, **không** từ trí nhớ: tên cũ là job chết ngay lượt đầu. Anti `app` chỉ nhận bậc `flash_lite\|flash\|pro\|inherit` |
 | `--effort` | Bắt buộc với Codex (`low\|medium\|high`), thay cho model |
-| `--transport app --note "..."` | Chỉ trong 3 ca ở Bước 3; thiếu `--note` là bị từ chối |
+| `--transport app --note "..."` | Chỉ Anti, chỉ trong 3 ca ở Bước 3; thiếu `--note` là bị từ chối. Codex bị từ chối dù có `--note` |
 | `--allow <prefix>` | Job được ghi ngoài thư mục của run (lặp được). Control plane và file bảo vệ không khai được |
 
 Job Claude **không** có transport: không process nào được bắn, bạn tự làm.
@@ -248,7 +251,7 @@ Job cần chạy test của chính crew (bị `CREW_ROLE=worker` chặn) → bri
 Tối đa `MAX_PARALLEL` job cùng lúc — code ép, adapter thứ 4 bị từ chối ngay trước khi spawn.
 Slot của job quá hạn được nhả sau `timeoutMs` + 10 phút, nên adapter chết không khoá run.
 
-**Giãn các lệnh dispatch ra ít nhất 5 giây một cái. Đừng bắn cùng lúc.** Job app báo fail
+**Giãn các lệnh dispatch ra ít nhất 5 giây một cái. Đừng bắn cùng lúc.** Job Anti app báo fail
 ngay sau dispatch thì **đọc đĩa trước, đừng retry ngay**: worker có thể đã làm xong. Số đo
 và cách adapter tự chịu cuộc đua: `references/transport-va-resume.md`.
 
@@ -272,15 +275,14 @@ crew run codex --manifest "$MP" --job 2 --prompt-file {brief job 2} --timeout 15
 Bước 4, nên không lệch được. Truyền tay thì cờ tay thắng; chỉ làm vậy khi có lý do.
 Adapter tự đặt vai worker cho tiến trình con, không cần tiền tố env.
 
-**Job `app` hoặc `--resume` (Anti hay Codex) → đọc `references/transport-va-resume.md`
+**Job Anti `app` hoặc `--resume` (Anti hay Codex) → đọc `references/transport-va-resume.md`
 trước khi bắn.** Ngắn gọn: id lấy từ `conversationId` của job trước trong sổ; job resume
 là job mới (`add-job` mới, evidence mới); resume không truyền `--model`.
 
 **Codex** — dùng `crew run codex`, **không** spawn subagent `codex:codex-rescue` (lý do ở
-`references/routing-table.md` mục Model). `--mode headless` (mặc định) chạy `codex exec`:
-chỗ duy nhất có `--idle-timeout`, `exitCode` thật, stream event, và text reply lưu lại.
-`--mode app`: thread thật trong app, không watchdog, `exitCode: null`; dòng đầu brief là
-tên thread nên phải là title job.
+`references/routing-table.md` mục Model). Codex chỉ có headless: `codex exec`, có
+`--idle-timeout`, `exitCode` thật, stream event, và text reply lưu lại. Làm tiếp thread cũ
+thì `crew run codex --resume <conversationId>` (id lấy từ sổ của job trước).
 
 ### Quyền của worker: bật tay, chỉ ở Codex headless
 
@@ -289,7 +291,7 @@ tên thread nên phải là title job.
 | Google Workspace CLI (Sheet, Drive, Docs, Gmail) | `--workspace-cli on`. Thiếu là `401` → `BLOCKED`; worker **không được** tự vá |
 | Trình duyệt, Computer Use, ghi ngoài repo | `--sandbox-mode danger-full-access` |
 
-Cả hai mặc định tắt và **không** dùng được ở `--mode app`. Anti không cần cờ nào.
+Cả hai mặc định tắt. Anti không cần cờ nào.
 Connector có sẵn của worker: theo `CLAUDE.md` của repo — mặc định coi là cấm khi chạm dữ
 liệu thật. **Job cần một trong hai cờ, ra `401`, hoặc gate đỏ `KHO CREDENTIAL BỊ ĐỔI` →
 đọc `references/quyen-han-worker.md`.**

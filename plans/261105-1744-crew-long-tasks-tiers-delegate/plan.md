@@ -1,7 +1,7 @@
 ---
 title: "agent-crew: task dài có handoff, bậc model, giao việc chủ động, Codex chỉ headless"
 description: "Cho Codex/Anti tự quản task dài qua chuỗi lát 30 phút có handoff, Claude chọn bậc model bằng một chữ, gate giao việc mạnh tay ở repo chọn, bỏ Codex app."
-status: pending
+status: in-progress
 priority: P1
 effort: "~4.5d"
 branch: feat/crew-long-tasks-tiers-delegate
@@ -48,7 +48,7 @@ Trần 30m **mỗi lát** giữ nguyên (an toàn quota, token Google Workspace 
 
 | # | Phase | Phụ thuộc | Effort | Status |
 |---|-------|-----------|--------|--------|
-| 1 | [Codex chỉ headless + sửa doc lệch](./phase-01-codex-headless-only-and-doc-fixes.md) | — | 3h | Pending |
+| 1 | [Codex chỉ headless + sửa doc lệch](./phase-01-codex-headless-only-and-doc-fixes.md) | — | 3h | Completed |
 | 2 | [Bậc model `--tier`](./phase-02-model-tiers.md) | — | 5h | Pending |
 | 3 | [Hạn mềm + handoff (`Status: CONTINUE`)](./phase-03-soft-deadline-and-handoff.md) | — | 1d | Pending |
 | 4 | [Chuỗi lát `--chain` có budget](./phase-04-chain-runner.md) | 3 | 1.5d | Pending |
@@ -61,13 +61,13 @@ Thứ tự cook: 1 → 2 → 3 → 4 → 5. Không song song: phase nào cũng s
 ## Acceptance (cả plan)
 
 - [ ] `node plugins/agent-crew/tests/run.mjs` xanh, gồm test mới của từng phase.
-- [ ] `crew add-job --worker codex --transport app ...` bị từ chối kèm hướng dẫn headless.
+- [x] `crew add-job --worker codex --transport app ...` bị từ chối kèm hướng dẫn headless.
 - [ ] `crew add-job --tier deep --worker anti ...` ghi đúng model còn sống từ `agy models`; tên chết → lỗi liệt kê tên sống.
 - [ ] Một job Codex headless bị cắt ở hard timeout vẫn để lại evidence có `## Handoff` + `Status: CONTINUE` (lượt cứu 3m); `resolveRun` chạy đúng 1 lần.
 - [ ] `crew run codex --chain` với fake-codex: 2 lát CONTINUE → exit 4 checkpoint → gọi lại → DONE; budget đếm tiếp từ sổ; collect PASS; `addJob` và `runFor` không tính lát vào MAX_JOBS; tối đa 16 lát/run.
 - [ ] Chuỗi dừng exit 3 khi handoff không tiến triển, có chữ đòi quyền, hoặc `resumeMismatch`.
 - [ ] Repo có `delegate: "aggressive"`: prompt một đầu việc code khớp trigger → gate in khối "Mặc định giao"; repo không khai → hành vi cũ.
-- [ ] `grep -rn "chuyển .transport: app" plugins/agent-crew/skills` rỗng; không còn chỗ nào bảo gõ tay `codex resume <id>` ngoài mục lịch sử.
+- [x] `grep -rn "chuyển .transport: app" plugins/agent-crew/skills` rỗng; không còn chỗ nào bảo gõ tay `codex resume <id>` ngoài mục lịch sử.
 - [ ] Sau mỗi phase, plugin cài khớp source (`diff -rq` rỗng); cuối cùng là 2.1.0.
 
 ## Non-goals

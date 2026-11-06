@@ -55,23 +55,28 @@ nó là transport harness **quan sát được**: có `exitCode`, có `usage`, c
 watchdog. Đo 25/08 trên 6 job app thật thì `app` không có một cái nào trong số đó ở Anti,
 và thiếu watchdog + `exitCode` ở Codex.
 
-Chọn `app` chỉ trong 3 ca, và `crew add-job` đòi `--note` nói ca nào:
+**Codex chỉ chạy `headless`** (từ 2.0.4): `crew add-job --worker codex --transport app` bị
+từ chối. Codex app không chat tiếp được, không xem live, không watchdog; ca "làm tiếp buổi
+sau" thì headless `crew run codex --resume <conversationId>` làm tốt hơn (đo 23/09, tiếp
+được cả thread app cũ).
+
+`app` chỉ còn cho **Anti**, chỉ trong 3 ca, và `crew add-job` đòi `--note` nói ca nào:
 
 | Ca | Vì sao app thắng |
 | --- | --- |
 | Job Anti sẽ gặp **prompt permission cần người trả** | Headless gặp prompt là silent-fail: `SUCCESS` với `response` rỗng |
 | **Việc mở/khám phá**, chưa viết nổi acceptance trước | Không có tiêu chí chấm thì mất evidence-first cũng không mất gì |
-| Cần **thread resume** làm tiếp buổi sau | `codex resume <id>` (Codex) hoặc `crew run anti --resume <conversationId>` (Anti, thêm 2026-09-17) — chỉ thread app có |
+| Cần **thread resume** làm tiếp buổi sau | `crew run anti --resume <conversationId>`: conversation Anti app sống qua phiên Claude. Codex không cần app cho ca này — `crew run codex --resume <conversationId>` ở headless |
 
 Ghi đè không `note` bị từ chối, và lời từ chối liệt kê luôn 3 ca này.
 
 Một thứ `app` **không** mua được, dù trực giác nói ngược: **theo dõi realtime.** Thread
-Codex app lên đĩa sau ~8s nhưng app chỉ hiện nó sau khi tắt và mở lại — đo 25/08 bằng một
-job 224 giây. Đừng chọn `app` vì nghĩ sẽ ngồi xem được.
+app lên đĩa sau ~8s nhưng app chỉ hiện nó sau khi tắt và mở lại — đo 25/08 bằng một job
+Codex 224 giây. Đừng chọn `app` vì nghĩ sẽ ngồi xem được.
 
 **Stdout lệch nhau giữa hai runtime, đừng suy từ cái này sang cái kia:** job Anti `app`
 không trả output về stdout, nên chọn `app` cho việc mà bước sau cần kết quả là bước sau
-không có gì để xử lý. Codex `app` thì **có** `result <job-id>`. Dù vậy cả hai đều lấy
+không có gì để xử lý. Codex headless thì có text reply lưu lại. Dù vậy cả hai đều lấy
 file evidence làm phán quyết — stdout chỉ là tiện.
 
 ## Ví dụ phân rã đúng
@@ -288,7 +293,7 @@ làm brief phình lên 7.2 KB hôm 24/08. Ba loại brief và ví dụ đối ch
 mặc định `headless` cho cả hai role, và được ghi tường minh vào manifest để lần sau đọc
 không phải suy lại.
 
-Muốn `app` thì truyền `--transport app` **kèm `--note`** nói ca nào trong 3 ca ở Bước 3.
+Muốn `app` (chỉ Anti) thì truyền `--transport app` **kèm `--note`** nói ca nào trong 3 ca ở Bước 3.
 Ghi đè không `note` bị từ chối, và lời từ chối liệt kê luôn 3 ca — đó đúng là đường quay
 lại chọn theo cảm tính.
 
@@ -301,7 +306,6 @@ khác là để lại một dòng sai trong sổ — và sổ đó là thứ duy
 
 ## Ca `app` thứ ba: resume làm tiếp buổi sau
 
-3. **Cần thread resume làm tiếp buổi sau** — `codex resume <id>` cho Codex,
-   `--resume <id>` (xem Bước 6). Từ 23/09 chạy được ở **cả 4 bề mặt** — cùng một cờ.
-   Nhưng Codex app chỉ resume được **trong cùng phiên Claude**, nên "làm tiếp buổi
-   sau" vẫn phải chọn Anti app.
+3. **Cần thread resume làm tiếp buổi sau** — chỉ Anti: `crew run anti --resume
+   <conversationId>` (xem Bước 6). Codex làm tiếp bằng `crew run codex --resume
+   <conversationId>` ở headless, không cần app.

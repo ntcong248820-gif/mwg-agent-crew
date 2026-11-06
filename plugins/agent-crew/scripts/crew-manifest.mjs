@@ -352,6 +352,15 @@ export const TRANSPORTS = new Set(["app", "headless"]);
 const DEFAULT_TRANSPORT = { owner: "headless", assist: "headless" };
 
 /**
+ * Shared with codex-run.mjs so the refusal reads the same whichever door the
+ * request came through: `crew add-job` or the adapter run by hand.
+ */
+export const CODEX_HEADLESS_ONLY =
+  "Codex chỉ chạy headless; transport app đã bỏ cho Codex\n" +
+  "  → cần thread làm tiếp thì chạy headless với `--resume <conversationId>` (crew run codex --resume <id>)\n" +
+  "  → app chỉ còn cho Antigravity";
+
+/**
  * The previous rule -- "app when the user wants to watch" -- was not a rule: it
  * could not be checked, so 34 historical jobs split 10/24 between the two
  * transports with no way to ask why any single one went where it went.
@@ -390,13 +399,23 @@ function resolveRouting(job) {
       `transport must be "app" or "headless", got ${JSON.stringify(transport)}`,
     );
   }
+  // Codex in the app cannot be talked to again, cannot be watched live, and
+  // runs with no idle watchdog, so it bought nothing the headless transport
+  // does not already give. The one case it used to cover -- a thread to pick up
+  // in a later session -- headless covers better through `--resume`, which also
+  // continues threads the app started (measured 23/09). Refused here, at the
+  // only door new jobs come through, so runs already on disk stay readable.
+  if (job.worker === "codex" && transport === "app") {
+    throw new ManifestError(CODEX_HEADLESS_ONLY);
+  }
   if (transport !== fallback && !job.note) {
     throw new ManifestError(
       `job overrides the ${job.role} default transport (${fallback} → ${transport}) with no reason\n` +
       `  → pass note: "<why>"; an override without one is transport picked by feel again\n` +
-      `  → app is worth its cost in three cases: an Antigravity job that will hit a\n` +
-      `    permission prompt a person must answer, exploratory work with no acceptance\n` +
-      `    writable in advance, or a thread that must be resumable in a later session`,
+      `  → app is worth its cost only for Antigravity, in three cases: a job that will\n` +
+      `    hit a permission prompt a person must answer, exploratory work with no\n` +
+      `    acceptance writable in advance, or a thread that must be resumable in a\n` +
+      `    later session`,
     );
   }
   return { role: job.role, transport };

@@ -39,7 +39,7 @@ Hỏi từng lần dispatch thì mất luôn ý nghĩa tự động. Chặn bằ
 | `max_parallel` | **3** | đo 2026-08-18: 3 job song song 16s vs tuần tự 33s, per-job không degrade |
 | `max_jobs_per_run` | **6** | vượt thì báo user, không tự chạy tiếp |
 | `print_timeout_default` | **15m** | mặc định của `agy` là 5m, quá ngắn cho job thật |
-| `print_timeout_max` | **30m** | job cần hơn thì phải chẻ nhỏ hoặc chuyển `transport: app` |
+| `print_timeout_max` | **30m** | job cần hơn thì chẻ nhỏ, hoặc nối job `--resume <conversationId>` (job mới tiếp thread cũ, headless) |
 | `min_job_size` | ~30s xử lý | dưới ngưỡng này thì gom job — overhead khởi động `agy` là 5.5s/lần |
 
 ## Vì sao phải dùng ngưỡng thay vì đọc quota

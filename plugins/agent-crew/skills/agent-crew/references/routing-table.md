@@ -34,7 +34,8 @@ tính của loại việc. Cùng một việc có thể là owner hay assist tu�
 ## Transport
 
 **`headless` là mặc định cho cả `owner` và `assist`.** Chọn `app` là ghi đè, và ghi đè
-phải kèm `--note` nói vì sao — không note thì `crew add-job` từ chối.
+phải kèm `--note` nói vì sao — không note thì `crew add-job` từ chối. **Codex chỉ chạy
+`headless`** (từ 2.0.4): `--worker codex --transport app` bị từ chối dù có note.
 
 | Vai trò | Nghĩa là | Transport mặc định |
 | --- | --- | --- |
@@ -61,20 +62,16 @@ khác nhau — rule 25/08 trước đó nối chúng lại là nối sai, và ph
 Nói gọn: `app` **quan sát yếu hơn** `headless` ở cả hai runtime. Nên nó phải là ngoại lệ
 có lý do, không phải mặc định.
 
-### Ba ca `app` đáng giá (user chốt 25/08)
+### Ba ca `app` đáng giá (user chốt 25/08, chỉ còn cho Anti)
 
 1. **Job Anti sẽ gặp prompt permission cần người trả.** Anti app cho người bấm đồng ý;
    headless gặp prompt là silent-fail. Đây là ca app mạnh nhất còn lại.
 2. **Việc mở/khám phá, chưa viết nổi acceptance trước.** Không có tiêu chí chấm thì mất
    evidence-first cũng không mất gì; đổi lại owner nhìn được quá trình.
-3. **Cần thread resume làm tiếp buổi sau.** `codex resume <id>` cho Codex, `crew run anti
-   --resume <conversationId>`. Từ 23/09 **cả 4 bề mặt đều resume được**, chung một
-   cờ `--resume <id>`.
-
-   Nhưng "làm tiếp buổi sau" **vẫn là lý do chọn Anti app** — vì lý do khác lúc
-   đầu tưởng. Codex app chỉ resume được **trong cùng một phiên Claude**: companion
-   giữ job theo `CODEX_COMPANION_SESSION_ID` và xoá chúng khi phiên đóng. Anti app
-   không dính vì `agentapi` giữ conversation ở store riêng của app.
+3. **Cần thread resume làm tiếp buổi sau.** `crew run anti --resume <conversationId>`:
+   `agentapi` giữ conversation ở store riêng của app nên sống qua phiên Claude.
+   Codex không cần app cho ca này: `crew run codex --resume <conversationId>` chạy
+   headless, tiếp được cả thread app cũ (đo 23/09).
 
 Ngoài 3 ca này, chọn `app` là đang trả giá quan sát để lấy một thứ chưa nêu được.
 
@@ -85,7 +82,7 @@ Ngoài 3 ca này, chọn `app` là đang trả giá quan sát để lấy một 
 | Đọc/ghi file, Sheet, script, code | **headless**, mặc định | Quyền hẹp nhất đủ dùng, đã nghiệm thu |
 | Google Workspace | **headless + `--workspace-cli on`** | Owner chốt 22/09: luôn đi Workspace CLI. **Không có lối tắt qua app** — app cũng bị sandbox nên `gws` không ghi nổi `token_cache.json` |
 | Cần trình duyệt / Computer Use / ghi ngoài repo | **headless + `--sandbox-mode danger-full-access`** | Bậc sandbox là thứ duy nhất chặn; app mode không thay thế được |
-| Việc cần ngữ cảnh một thread app đang sống | `--mode app` | Xem "Ba ca `app` đáng giá" |
+| Việc cần ngữ cảnh một thread đang có | `--resume <conversationId>` (Codex: headless; Anti: cùng transport của job trước) | Xem "Ba ca `app` đáng giá" |
 
 ### Luật transport chi tiết nằm ở đâu
 
@@ -93,7 +90,7 @@ Bảng này chỉ đủ để chọn đường. Luật chi tiết nằm ở các
 
 | Cần biết | File |
 | --- | --- |
-| Job `app`, resume Anti/Codex, giãn lệnh dispatch, heartbeat, báo im lặng của Anti app | `transport-va-resume.md` |
+| Job Anti `app`, resume Anti/Codex, giãn lệnh dispatch, heartbeat, báo im lặng của Anti app | `transport-va-resume.md` |
 | `--workspace-cli on`, `--sandbox-mode`, connector Google, `401`, cổng kho credential | `quyen-han-worker.md` |
 | Bảng verdict, cửa sổ phạm vi, retry, reconcile orphan, hold | `nghiem-thu-chi-tiet.md` |
 | Owner gõ `@anti`/`@codex`, resume theo manifest, phiên chat với worker, review 2 vòng | `phoi-hop-owner.md` |
@@ -126,7 +123,7 @@ khớp entry nào, rồi khớp prefix cho phép của task, và rơi vào `inSc
 Chọn bậc theo **lượng phán đoán cần để đi từ input sang output**, không theo cảm
 giác việc nặng hay nhẹ.
 
-| Loại việc | Anti headless (`agy`) | Anti app (`agentapi`) | Codex (cả 2 transport) |
+| Loại việc | Anti headless (`agy`) | Anti app (`agentapi`) | Codex (headless) |
 | --- | --- | --- | --- |
 | Điền theo mẫu, chuẩn hoá bảng, readback/export | bậc flash, mức `low` | `flash_lite` | — |
 | Thi hành skill nhiều case, crawl + phân loại theo whitelist | bậc flash, mức `medium` | `flash` | `--effort low` |

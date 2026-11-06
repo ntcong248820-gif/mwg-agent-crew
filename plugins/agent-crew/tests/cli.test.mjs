@@ -62,6 +62,10 @@ const gitRepo = (prefix) => {
   t.check("--allow lặp → filesMayModify", JSON.stringify(readManifest(mp).jobs[1].filesMayModify), JSON.stringify(["src/", "docs/"]));
   t.check("worker antigravity ghi đúng tên", readManifest(mp).jobs[0].worker, "antigravity");
   t.check("codex thiếu --effort → exit 2", crew(["add-job", mp, "--worker", "codex", "--role", "assist", "--title", "x"], { cwd: ws }).code, 2);
+  const codexApp = crew(["add-job", mp, "--worker", "codex", "--role", "owner", "--transport", "app", "--note", "x", "--effort", "low", "--title", "t"], { cwd: ws });
+  t.check("codex --transport app → exit khác 0", codexApp.code !== 0, true);
+  t.check("...câu lỗi chỉ sang headless --resume", /headless/.test(codexApp.err) && /--resume <conversationId>/.test(codexApp.err), true);
+  t.check("...và không ghi job nào vào sổ", readManifest(mp).jobs.length, 2);
   t.check("worker lạ → exit 2", crew(["add-job", mp, "--worker", "gemini", "--role", "assist", "--title", "x", "--model", "m"], { cwd: ws }).code, 2);
   t.check("evidence ngoài .crew → exit 1 (luật của sổ, không phải của CLI)",
     crew(["add-job", mp, "--worker", "anti", "--role", "assist", "--title", "x", "--model", "m", "--evidence", "src/w.md"], { cwd: ws }).code, 1);

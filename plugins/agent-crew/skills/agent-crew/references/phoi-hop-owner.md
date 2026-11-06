@@ -40,8 +40,8 @@ crew session latest --worker anti   # hoặc codex; layout có task thì thêm -
 
 - In JSON có `conversationId` → job mới (`crew add-job` mới, evidence mới) với `--resume <id>`.
   Exit 1 ("chưa có conversation") → dispatch mới. Đừng đoán id.
-- Resume Anti **không** truyền `--model`. Codex: **chọn headless resume** — app chỉ tiếp được thread
-  mới nhất của companion (xem `transport-va-resume.md`), nên dễ trượt.
+- Resume Anti **không** truyền `--model`. Codex: `crew run codex --resume <conversationId>` (chỉ có
+  headless; tiếp được cả thread Codex app cũ).
 - **Guard bận:** conversation còn job `pending`/`running` thì adapter từ chối **trước khi gửi**,
   job thành `failed` kèm lý do. Bắn lại sau khi job kia xong. Collect đỏ cho tới lúc đó.
 - Guard chỉ biết theo manifest, và chỉ quét các run cùng thư mục `reports/` (task cha và
