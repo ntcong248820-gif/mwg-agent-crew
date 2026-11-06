@@ -29,7 +29,7 @@ là mất đường đó:
 | --- | --- | --- |
 | Antigravity | CLI `agy` (headless) và/hoặc `agentapi` (app mode) | `agy --version` |
 | Codex headless | CLI `codex` | `codex --version` |
-| Codex app | thêm plugin Claude Code `openai-codex` (chứa `codex-companion.mjs`) | `crew doctor` |
+| Codex app | Bỏ từ 2.0.4 — Codex chỉ chạy headless, không cần cài thêm | — |
 
 ## 3. Cài plugin
 
@@ -91,9 +91,14 @@ routing gate chỉ nói khi owner gõ `@anti`/`@codex`.
 Chưa khai mục tiêu ở `CLAUDE.md` vẫn chạy được — crew sẽ nói thẳng là nó đang xếp ưu
 tiên mà không có mục tiêu để bám, thay vì tự bịa ra một cái.
 
-## 6. Codex app mode (tùy chọn)
+## 6. Codex app mode (bỏ từ 2.0.4)
 
-App mode đi qua `codex-companion.mjs` của plugin `openai-codex`. Crew tìm nó ở:
+`crew add-job --worker codex --transport app` và `codex-run.mjs --mode app` bị từ chối từ
+2.0.4, code của nó đã xoá ở 2.1.3; làm tiếp thread thì `crew run codex --resume <conversationId>`
+ở headless. Phần dưới chỉ còn để hiểu run cũ, và cho `crew-reconcile --cancel-orphans` khi
+phải hỏi companion về job app của run cũ.
+
+App mode từng đi qua `codex-companion.mjs` của plugin `openai-codex`. Crew tìm nó ở:
 
 1. `$CLAUDE_PLUGIN_ROOT/scripts/codex-companion.mjs`
 2. `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs`
@@ -104,7 +109,7 @@ Máy nào chỉ có bản cache (`~/.claude/plugins/cache/...`) thì khai tay:
 export CREW_CODEX_COMPANION=/duong/dan/den/codex-companion.mjs
 ```
 
-Không tìm thấy thì adapter **ném lỗi**, không lặng lẽ rơi về headless — đổi transport
+Không tìm thấy thì adapter từng **ném lỗi**, không lặng lẽ rơi về headless — đổi transport
 ngầm là cách tạo ra kết quả sai mà không ai biết.
 
 ## 7. Kiểm sau khi cài

@@ -110,6 +110,15 @@ export function crewDigest(workspace, { now = new Date(), epoch = DIGEST_EPOCH, 
     }
 
     for (const j of m.jobs) {
+      // Dừng có handoff: không quá hạn, không chạy, nhưng việc chưa xong. Đã có job
+      // sau resume đúng thread thì thôi nhắc (collect cũng không chặn nữa).
+      if (j.status === "continue") {
+        const resumed = j.conversationId && m.jobs.some((k) => k.seq > j.seq && k.resumedFrom === j.conversationId && !k.resumeMismatch);
+        if (resumed) continue;
+        jobs.push(`> ${label} job ${Number(j.seq)} dừng có handoff (continue) → cần làm tiếp: job mới --resume ${/^[\w-]{1,80}$/.test(j.conversationId ?? "") ? j.conversationId : "<conversationId>"} (hoặc --chain)`);
+        flagged = true;
+        continue;
+      }
       if (j.status !== "pending" && j.status !== "running") continue;
       const since = Date.parse(j.startedAt ?? "") || Date.parse(m.createdAt ?? "") || 0;
       const late = !since || nowMs - since > staleAfter(j);

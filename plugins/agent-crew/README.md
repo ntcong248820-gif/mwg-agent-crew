@@ -15,15 +15,16 @@ Một cửa vào cho mọi script. Cài shim một lần (ghi `~/.local/bin/crew
 
 ```bash
 node plugins/agent-crew/bin/crew.mjs install
-crew doctor          # node, git, layout, agy/codex, tên model còn sống, transport app
-crew init            # .crew/ + .gitignore cho log thô; --state on để bật file trạng thái phiên
+crew doctor          # node, git, layout, agy/codex, tên model còn sống, bậc --tier, delegate
+crew init            # .crew/ + .gitignore cho log thô; --state on để bật file trạng thái phiên;
+                     # --delegate aggressive để gate gợi ý giao việc code/research chủ động
 ```
 
 Một run, từ đầu tới cuối:
 
 ```bash
 MP=$(crew new-run)                                   # layout có task: --task <task>
-crew add-job "$MP" --worker codex --role owner --title "sửa test" --effort medium --allow src/
+crew add-job "$MP" --worker codex --role owner --title "sửa test" --tier code --allow src/
 crew paths "$MP" --job 1                             # brief lưu ở dòng "brief"
 crew run codex --manifest "$MP" --job 1 --prompt-file <brief>
 crew collect "$MP"
@@ -31,6 +32,14 @@ crew collect "$MP"
 
 `crew run --manifest --job` lấy `--evidence`, `--workspace`, `--mode`, `--model`,
 `--effort` từ sổ — đúng cái `add-job` đã ghi, nên không lệch được. Cờ truyền tay thắng.
+`add-job --tier light|standard|deep|code|claude|claude-max` đổi bậc ra tên `agy models`
+còn sống (Anti) hoặc `--effort` (Codex); `--bump-from <seq>` nâng đúng 1 bậc từ job trước;
+`--model`/`--effort` tay vẫn thắng. `crew doctor` in mỗi bậc đang ra model nào.
+
+Việc dài hơn trần 30m của một job: `crew run codex --manifest "$MP" --job N --prompt-file
+<brief> --chain --timeout 30m --budget 4h` — lát nào ra `Status: CONTINUE` (có `## Handoff`)
+thì crew tự nối lát kế trên cùng thread; exit 4 = checkpoint mỗi 2 lát, đọc handoff rồi gọi
+lại đúng lệnh. Codex chỉ chạy headless (từ 2.0.4); transport `app` chỉ còn cho Antigravity.
 
 `crew --help` liệt kê mọi lệnh. Lệnh nào đã có script thì chạy đúng script đó ở tiến
 trình con, giữ nguyên tham số và exit code; cờ lạ vẫn bị script từ chối.
@@ -100,6 +109,8 @@ thư mục không phải git trước khi bắn job nào.
 | `costGate` | API tính tiền theo lượt gọi. Adapter chèn danh sách vào brief; worker gặp thì dừng, trả `COST_GATE — {api}`; collect tạo hold chờ owner |
 | `routingTriggers` | Regex (không phân biệt hoa thường) trên prompt. Khớp ≥2 `kind` khác nhau → hook gợi ý chia việc; 1 `kind` → gợi ý một job. Trigger khớp tên trong `costGate` bị từ chối lúc nạp |
 | `routingLog` | Nơi hook ghi lượt bắn (`ts, branch, decision, triggers` — không bao giờ ghi prompt). Không khai = không ghi |
+| `delegate` | `"default"` (mặc định) \| `"aggressive"`. Aggressive: 1 đầu việc khớp trigger là hook gợi ý giao (code → Codex, research → Anti) kèm ngưỡng tự làm ~10 lượt tool / 3 file; repo không khai `routingTriggers` thì dùng bộ mặc định `default-code`/`default-research` (`scripts/lib/default-routing-triggers.mjs`), trigger repo cùng `id` đè. Chỉ đổi lời gợi ý, không cấp quyền |
+| `modelTiers` | Ghi đè bảng bậc `--tier` theo bậc: `agy` (mảng regex neo `^...$` trên tên `agy models`), `app` (`flash_lite\|flash\|pro\|inherit`), `effort` (`low\|medium\|high`). Dùng khi nhà cung cấp đổi lược đặt tên. Không khai = bảng mặc định trong `scripts/lib/model-tiers.mjs` |
 | `redactConfig` | File `.json` (nên gitignore) có mục `redact` — `internalDomains`, `internalHosts`, `emailDomains` — cho bộ che của state phiên và export transcript; mọi `<mục>.origin` trong file cũng bị che. Tách file vì đây là phần riêng tư, còn `crew.config.json` thì commit. Không khai = chỉ che theo hình dạng chung |
 
 Luật viết bằng lời — mục tiêu, cách tạo/đóng task, công cụ không được tự gọi — nằm ở
@@ -232,7 +243,7 @@ quyết định của dispatcher, nằm trong brief để audit.
 | --- | --- |
 | `scripts/anti-env.mjs` | Discover runtime của app Antigravity 2.0 (pid, gRPC address, projectId). Không hardcode giá trị nào; app restart thì tự discover lại. |
 | `scripts/anti-run.mjs` | Chạy 1 job Antigravity. `--mode headless` (agy, nhanh, có token usage) hoặc `--mode app` (hiện conversation trong app để xem trực tiếp). Ở app mode: ghi `conversationId` ngay khi có, ghi sự kiện `anti.watch` vào sidecar khi conversation im quá `--quiet-warn`/`--quiet-alert` (mặc định 5m/10m, không tự giết job), sự kiện `idle` khi conversation đã `done` hơn 2 phút mà chưa có evidence (trừ phiên chat), `--chat on` mở phiên chat có giám sát cho owner, và bắt SIGTERM để ghi `failed` có kiểm credential. |
-| `scripts/codex-run.mjs` | Chạy 1 job Codex. `--mode headless` (mặc định) qua `codex exec --json`, watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. `--mode app` mở thread thật trong app Codex qua companion của plugin — hiện trong danh sách thread với tên `Codex Companion Task: {dòng đầu brief}`, và resume được bằng `codex resume <id>`. Sau khi settle nó gọi `result <job-id>` để lấy câu trả lời của worker về, ghi cạnh log và trỏ qua `lastMessage` như headless; kèm `companionExitStatus` và `touchedFiles` mà companion tự khai. Chịu được cuộc đua job store ngay sau dispatch (id vừa cấp bị phủ nhận, hoặc job trả về chưa có `status`) trong cửa sổ 45s tính theo đồng hồ, và ghi số lần hỏi lại vào `settleRetries` thay vì nuốt. Log ghi vào `logDir` của layout (mặc định `.crew/logs/{run}/`, nên gitignore) vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest và `crew paths`. |
+| `scripts/codex-run.mjs` | Chạy 1 job Codex. `--mode headless` (mặc định) qua `codex exec --json`, watchdog giết job không phát event trong `--idle-timeout` (mặc định 2m) — đúng ca pid chết mà state vẫn đọc là running. `--mode app` **bị từ chối từ 2.0.4** (Codex chỉ headless; làm tiếp thread bằng `--resume <conversationId>`), code transport app đã xoá ở 2.1.3. Manifest cũ có job Codex `transport: "app"` (kèm `companionJobId`, `settleRetries`…) vẫn được collect/reconcile đọc. Log ghi vào `logDir` của layout (mặc định `.crew/logs/{run}/`, nên gitignore) vì nó mang nội dung file worker đọc; đường dẫn nằm trong manifest và `crew paths`. |
 | `scripts/codex-companion-path.mjs` | Tìm `codex-companion.mjs` của plugin Codex (ngoài repo). Env override `MWG_CODEX_COMPANION` là **quyết định cuối** — trỏ sai thì báo lỗi, không dò tiếp sang bản khác. |
 | `scripts/anti-status.mjs` | Đọc tiến độ 1 conversation. Luôn read-only: copy `.db`+`-wal`+`-shm` sang temp rồi query bản copy. |
 | `scripts/crew-guards.mjs` | Guard dùng chung cho mọi worker: evidence gate, duration ceiling, đọc brief. |
@@ -244,6 +255,8 @@ quyết định của dispatcher, nằm trong brief để audit.
 | `scripts/crew-session.mjs` | Chỉ đọc. `run-for --task <dir>`: run hôm nay của task còn nhận job (chưa report, chưa qua cổng, dưới `MAX_JOBS`), không có thì in `new`. `latest --task <dir> --worker anti\|codex`: conversation mới nhất của worker đó để `--resume`, bỏ job `resumeMismatch` và id sai dạng. Resume vào conversation còn job sống thì `claimRunSlot` từ chối trong khoá, trước khi gửi gì. Chỉ quét các run cùng thư mục `reports/` (task cha và work item là hai phạm vi), và chỉ biết trạng thái theo manifest: conversation app còn chạy sau khi adapter hết giờ thì không thấy. |
 | `scripts/lib/holds.mjs` | Logic hold: tạo hold cổng chi phí, đọc tên API từ dòng `COST_GATE`, trả lời/hoãn/cover, vân tay `holds` mà adapter so ở mọi đường thoát, và verdict `WAIVED`/`COVERED`/`DEFERRED`. |
 | `scripts/lib/crew-digest.mjs` | Bảng "Crew còn dở" (tối đa 15 dòng) cho đầu phiên Claude: hold đang chờ, job kẹt, run chưa nghiệm thu. Đọc thẳng manifest, không chép text evidence. |
+| `scripts/lib/chain-runner.mjs` | `crew run anti\|codex ... --chain`: nối lát `CONTINUE` trên cùng thread (`--resume`), mỗi lát một job `chainOf` trong sổ, brief lát kế do crew viết theo mẫu cố định. Dừng ở lát không còn `continue`, kiểm handoff không đạt, thread bị tách, hết `--budget` (4h, trần 8h) / `--max-slices` (8) → exit 3; mỗi 2 lát → exit 4 (checkpoint). Bộ đếm nằm trên job gốc trong sổ; SIGTERM chuyển xuống lát đang chạy. Sidecar `chain-<N>.jsonl` trong thư mục log. |
+| `scripts/lib/handoff-check.mjs` · `scripts/lib/chain-slice-progress.mjs` | Kiểm cơ học handoff trước khi nối lát: đủ 4 mục, `### Đang dở` khác lát trước, không nhắc dispatch/quyền/control plane (thuần); và lát có đổi file ngoài evidence không (`touchedFiles`, rồi mtime trong thư mục run + `filesMayModify`). |
 | `scripts/lib/progress-watch.mjs` | Hai hàm thuần đo độ im của job Anti app: vân tay `byStatus` của conversation là tín hiệu chính, mtime file riêng của job chỉ được hoãn báo động. |
 | `scripts/crew-scope.mjs` | Quy file thay đổi trong working tree về từng job: ưu tiên `touchedFiles` runtime tự khai, còn lại theo mtime nằm trong khoảng job đó chạy. Tách khỏi collect vì đây là logic quy trách nhiệm, không phải logic phán quyết. |
 | `scripts/claude-session-export.mjs` | Xuất transcript của 1 session Claude thành markdown gầy để bàn giao sang agent khác. Gộp 3 nguồn (dòng chính, `subagents/`, `tool-results/`), bỏ `attachment`/`thinking`/`image`/tool output replay được, redact theo hình dạng giá trị, trần tuyệt đối 200 KB có assert. Rào chống injection mang nonce mỗi lần chạy. Thiếu module redact thì **abort**, không xuất file; `--out` trỏ vào path git đang theo dõi thì **từ chối**, không có cờ bỏ qua. |
@@ -274,8 +287,8 @@ Anti app **không** có completion callback, nên `anti-run.mjs` lấy file evid
 tín hiệu hoàn thành (step status là enum không tài liệu, do app sở hữu, và đã từng gọi
 một job xong rồi là "đang chạy" suốt 8 phút).
 
-Codex app **có** tín hiệu thật: `status <jobId> --wait` chặn tới khi job settle. Nên
-`codex-run.mjs --mode app` không poll evidence. Trần timeout vẫn giữ riêng, vì `--wait`
+Codex app (bỏ từ 2.0.4, code xoá ở 2.1.3) **từng có** tín hiệu thật: `status <jobId> --wait` chặn tới khi job settle. Nên
+đường đó không poll evidence. Trần timeout vẫn giữ riêng, vì `--wait`
 cũng treo được nếu broker chết — hết trần thì `cancel` rồi mới báo lỗi, để không bỏ lại
 job chạy hoang.
 
@@ -398,7 +411,7 @@ chỉ ra cái chết duy nhất không ai ghi: **của chính adapter**. `SIGTER
 rồi thoát bằng mã `128 + signo`. Ghi đồng bộ, vì trong signal handler không có `await`
 — nên `updateJob` được import tĩnh riêng cho đường này.
 
-**Handler này chỉ với tới đường `headless`.** Đo được khi viết test: đường `app` chờ
+**Handler này chỉ với tới đường `headless`** (ghi chép thời Codex còn transport app; code app đã xoá ở 2.1.3). Đo được khi viết test: đường `app` chờ
 bên trong `spawnSync`, mà `spawnSync` khoá event loop — nên Node không giao được signal
 cho handler nào cho tới khi lệnh đó trả về. Đây là giới hạn thật, không phải chỗ chưa
 làm: job app bị giết giữa lúc chờ được cứu qua **cổng**, và đó chính là lý do
@@ -534,7 +547,7 @@ Ghi hai mốc `atDispatch` / `atSettle` thay vì một, vì reading tự đổi:
 `atDispatch` khoá sau lần ghi đầu (job đầu bắn thắng), `atSettle` ghi đè mọi lần (job cuối
 lắng thắng) — nên 3 adapter chạy song song vẫn cho ra hai field đúng nghĩa.
 
-Chỉ app mode ghi. Headless là `codex exec`, process riêng, không đi qua broker, nên câu hỏi
+Chỉ app mode từng ghi, nên từ 2.1.3 không job mới nào ghi field này; collect vẫn đọc nó ở run cũ. Headless là `codex exec`, process riêng, không đi qua broker, nên câu hỏi
 "chung hay riêng" không tồn tại với nó; lấy reading lúc chạy headless chỉ gán broker của
 session khác cho job đó.
 

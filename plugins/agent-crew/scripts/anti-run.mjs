@@ -53,6 +53,10 @@ import {
   resolveLogDir,
   stripUnsafeEnv,
   validateEvidencePath,
+  softDeadlineAt,
+  handoffRescuePrompt,
+  HANDOFF_RESCUE_MS,
+  evidenceHasStatus,
 } from "./crew-guards.mjs";
 import { WORKER_ROLE_ENV } from "./lib/crew-role.mjs";
 
@@ -73,7 +77,8 @@ function resumeMismatchDetail(asked, got) {
     + " — phiên cũ không được nạp, worker đã làm lại từ đầu";
 }
 
-function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMode, resumeId }) {
+/** argv + spawn của `agy` headless; lượt cứu handoff dùng lại đúng đường này. */
+function spawnAgy({ promptText, workspace, model, timeout, agyMode, resumeId }) {
   const args = [
     "-p", promptText,
     "--output-format", "json",
@@ -88,9 +93,7 @@ function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMo
   // takes "the most recent conversation" -- with max_parallel at 3 that is a
   // race, and losing it means feeding a follow-up into another job's session.
   if (resumeId) args.push("--conversation", resumeId);
-
-  const started = new Date();
-  const proc = spawnSync("agy", args, {
+  return spawnSync("agy", args, {
     cwd: workspace,
     encoding: "utf8",
     timeout: parseDuration(timeout) + 30_000, // let agy hit its own timeout first
@@ -101,7 +104,47 @@ function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMo
     env: stripUnsafeEnv({ ...process.env, ...WORKER_ROLE_ENV }),
     maxBuffer: 64 * 1024 * 1024,
   });
-  const endedAt = new Date().toISOString();
+}
+
+/** agy in một object JSON; lấy dòng cuối phòng có dòng lạc. Null khi không đọc được. */
+function lastJson(stdout) {
+  try {
+    return JSON.parse(String(stdout ?? "").trim().split("\n").filter(Boolean).pop());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lượt cứu handoff của Anti headless: `agy` tự cắt ở `--print-timeout` (exit 3,
+ * `finished_reason: print_timeout`) nhưng vẫn in `conversation_id` (đo 06/11), nên
+ * gửi tiếp đúng conversation đó một lượt ngắn để worker ghi handoff. Không truyền
+ * `--model`: phiên giữ model của nó.
+ */
+function rescueHeadless({ workspace, evidenceAbs, conversationId, agyMode, hardMs }) {
+  const started = Date.now();
+  const proc = spawnAgy({
+    promptText: handoffRescuePrompt(evidenceAbs.startsWith(workspace) ? evidenceAbs.slice(workspace.length + 1) : evidenceAbs),
+    workspace,
+    timeout: `${Math.max(1, Math.round(hardMs / 1000))}s`,
+    agyMode,
+    resumeId: conversationId,
+  });
+  let ok = false;
+  try { ok = existsSync(evidenceAbs) && readWorkerStatus(evidenceAbs).status === "continue"; } catch { /* unreadable = not rescued */ }
+  const parsed = lastJson(proc.stdout);
+  return {
+    ran: true,
+    ok,
+    durationSec: Math.round((Date.now() - started) / 1000),
+    ...(proc.error ? { killedFor: proc.error.message } : parsed?.finished_reason === "print_timeout" ? { killedFor: "print_timeout" } : {}),
+  };
+}
+
+function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMode, resumeId }) {
+  const started = new Date();
+  const proc = spawnAgy({ promptText, workspace, model, timeout, agyMode, resumeId });
+  let endedAt = new Date().toISOString();
 
   if (proc.error) {
     throw new AntiRunError(`could not run agy: ${proc.error.message}`, "check that agy is on PATH");
@@ -114,22 +157,24 @@ function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMo
   // jobs on 2026-08-24 were recorded as failed on an agy ERROR while their
   // evidence was complete and met its acceptance criteria, and both had to be
   // patched by hand -- that is the inversion this ordering removes.
-  let parsed = null;
   let runtimeDetail = null;
 
+  // Read even when agy exited non-zero: on its own print timeout it exits 3 and
+  // still prints the conversation id (measured 06/11), and that id is the only
+  // way to continue the job. Exit status still decides runtimeDetail below.
+  const parsed = lastJson(stdout);
   if (proc.status !== 0) {
     runtimeDetail = `agy exited ${proc.status}: ${stderrTail || stdout.slice(0, 300)}`;
-  } else {
-    try {
-      // agy prints one JSON object; take the last line in case of stray output.
-      parsed = JSON.parse(stdout.split("\n").filter(Boolean).pop());
-    } catch (err) {
-      runtimeDetail = `agy output is not JSON: ${err.message}`;
-    }
+  } else if (!parsed) {
+    runtimeDetail = "agy output is not JSON";
   }
-  if (parsed && parsed.status !== "SUCCESS") {
+  // Both checks read agy's own verdict, so only on a clean exit: a non-zero exit
+  // already said what went wrong above, and must not be overwritten here.
+  if (proc.status !== 0 || !parsed) {
+    // runtimeDetail set above
+  } else if (parsed.status !== "SUCCESS") {
     runtimeDetail = `agy reported status ${parsed.status}`;
-  } else if (parsed && !String(parsed.response ?? "").trim()) {
+  } else if (!String(parsed.response ?? "").trim()) {
     // The silent-failure case: SUCCESS with nothing said, which is what a
     // blocked permission prompt looks like from out here. It still only decides
     // the outcome when no evidence was written.
@@ -175,16 +220,40 @@ function runHeadless({ promptText, workspace, evidenceAbs, model, timeout, agyMo
       + " — không kiểm được phiên cũ có được nạp hay không";
   }
 
-  const verdict = judgeJob(evidenceAbs, {
-    runtimeOk: runtimeDetail === null,
-    runtimeDetail,
-    context: `agy conversation ${returnedId ?? "unknown"}`,
-  });
+  // Cut at its own ceiling with no verdict on disk: one short turn on the same
+  // conversation to write the handoff. Not on a resume mismatch -- the id agy
+  // returned is not the session this job was meant to be.
+  let handoffRescue = null;
+  if (parsed?.finished_reason === "print_timeout" && returnedId && !resumeMismatch && !evidenceHasStatus(evidenceAbs)) {
+    handoffRescue = rescueHeadless({
+      workspace, evidenceAbs, conversationId: returnedId, agyMode,
+      hardMs: Math.min(HANDOFF_RESCUE_MS, parseDuration(timeout)),
+    });
+    endedAt = new Date().toISOString();
+    // The timeout is what CONTINUE means; a rescued job is not a runtime failure.
+    if (handoffRescue.ok) runtimeDetail = null;
+  }
+
+  let verdict;
+  try {
+    verdict = judgeJob(evidenceAbs, {
+      runtimeOk: runtimeDetail === null,
+      runtimeDetail,
+      context: `agy conversation ${returnedId ?? "unknown"}`,
+    });
+  } catch (err) {
+    // The failure path still records the session and the rescue: a job that
+    // died at its ceiling is the one most worth resuming by hand.
+    if (returnedId) err.conversationId = returnedId;
+    if (handoffRescue) err.handoffRescue = handoffRescue;
+    throw err;
+  }
   const evidenceBytes = verdict.evidenceBytes;
 
   return {
     worker: "antigravity",
     mode: "headless",
+    handoffRescue: handoffRescue ?? undefined,
     conversationId: returnedId,
     resumedFrom: resumeId ?? null,
     startedAt: started.toISOString(),
@@ -324,6 +393,7 @@ export async function runApp({
   let maxQuietMs = 0;
   let idleSince = null;
   let idleEmitted = false;
+  let handoffRescue = null;
   for (;;) {
     if (existsSync(evidenceAbs) && statSync(evidenceAbs).size > 0 && readWorkerStatus(evidenceAbs).reported) {
       break;
@@ -388,11 +458,21 @@ export async function runApp({
     }
 
     if (now > deadline) {
+      // One handoff rescue, never in a chat session: there the owner decides
+      // when the conversation ends, not the clock.
+      if (!chat && !handoffRescue) {
+        handoffRescue = await rescueApp({
+          d, agentapi, env, workspace, evidenceAbs, conversationId,
+          hardMs: Math.min(HANDOFF_RESCUE_MS, parseDuration(timeout)),
+        });
+        if (evidenceHasStatus(evidenceAbs)) break;
+      }
       const err = new AntiRunError(
         `app-mode job did not finish within ${timeout}`,
         `conversation ${conversationId}, evidence not written; last seen ${JSON.stringify(last)}`,
       );
       err.quietMaxSec = Math.round(maxQuietMs / 1000);
+      if (handoffRescue) err.handoffRescue = handoffRescue;
       throw err;
     }
     await d.sleep(d.pollMs);
@@ -423,7 +503,40 @@ export async function runApp({
     reportedStatus: verdict.reportedStatus,
     runtimeVerdict: verdict.runtimeVerdict,
     quietMaxSec: Math.round(maxQuietMs / 1000),
+    handoffRescue: handoffRescue ?? undefined,
   };
+}
+
+/**
+ * Lượt cứu handoff của Anti app. Đo 07/10: tin gửi vào conversation đang chạy bị
+ * app giữ tới hết lượt, nên đợi conversation `done` trước rồi mới gửi. Cả việc
+ * đợi lẫn việc chờ evidence nằm trong cùng trần `hardMs`.
+ */
+async function rescueApp({ d, agentapi, env, workspace, evidenceAbs, conversationId, hardMs }) {
+  const started = d.now();
+  const end = started + hardMs;
+  const result = (ok, killedFor) => ({
+    ran: true, ok, durationSec: Math.round((d.now() - started) / 1000), ...(killedFor ? { killedFor } : {}),
+  });
+  for (;;) {
+    let st = null;
+    try { st = d.status(conversationId); } catch { /* DB hụt một nhịp */ }
+    if (st?.state === "done") break;
+    if (evidenceHasStatus(evidenceAbs)) return result(readWorkerStatus(evidenceAbs).status === "continue");
+    if (d.now() >= end) return result(false, "conversation chưa dừng lượt trong trần lượt cứu");
+    await d.sleep(d.pollMs);
+  }
+  const rel = evidenceAbs.startsWith(workspace) ? evidenceAbs.slice(workspace.length + 1) : evidenceAbs;
+  try {
+    d.dispatch(agentapi, ["send-message", conversationId, handoffRescuePrompt(rel)], { workspace, env });
+  } catch (err) {
+    return result(false, `send-message failed: ${String(err.stderr || err.message).trim().slice(0, 200)}`);
+  }
+  for (;;) {
+    if (evidenceHasStatus(evidenceAbs)) return result(readWorkerStatus(evidenceAbs).status === "continue");
+    if (d.now() >= end) return result(false, "exceeded");
+    await d.sleep(d.pollMs);
+  }
 }
 
 /** Mặc định ngưỡng im của phiên chat: alert ở timeout − 1m, warn sớm hơn 1 phút. */
@@ -443,15 +556,16 @@ export async function antiRun(options, deps = {}) {
     throw new AntiRunError(`--chat chỉ nhận "on", nhận "${options.chat}"`);
   }
   const chat = options.chat === "on" || options.chat === true;
+  const timeout = options.timeout ?? DEFAULT_TIMEOUT;
+  const timeoutMs = parseDuration(timeout); // validate before spending anything
   const promptText = appendWorkerContract(readPrompt(options), {
     evidenceAbs,
     workspace,
     unsandboxed: true,
     chat,
     mayModify: options.filesMayModify ?? [],
+    softDeadline: softDeadlineAt(Date.now(), timeoutMs),
   });
-  const timeout = options.timeout ?? DEFAULT_TIMEOUT;
-  parseDuration(timeout); // validate before spending anything
 
   assertEvidenceAbsent(evidenceAbs);
 
@@ -544,7 +658,9 @@ function needsHuman(result) {
   return Boolean(result.runtimeVerdict)
     || result.status === "done_unverified"
     || result.status === "blocked"
-    || result.status === "needs_context";
+    || result.status === "needs_context"
+    // Not a failure, but not done either: someone has to resume it.
+    || result.status === "continue";
 }
 
 /**
@@ -738,6 +854,8 @@ export async function main(argv, { deps = {} } = {}) {
           failure: err.message,
           // Số đo nền cho ngưỡng im: có từ vòng poll của job app (timeout cũng có).
           ...(err.quietMaxSec != null ? { quietMaxSec: err.quietMaxSec } : {}),
+          ...(err.handoffRescue ? { handoffRescue: err.handoffRescue } : {}),
+          ...(err.conversationId ? { conversationId: err.conversationId } : {}),
           ...credentialPatch(),
           // Only for a job this process claimed: an unclaimed one carries the
           // fingerprint of some earlier attempt, and holds legitimately moved since.
@@ -773,6 +891,7 @@ export async function main(argv, { deps = {} } = {}) {
         reportedStatus: result.reportedStatus,
         runtimeVerdict: result.runtimeVerdict,
         conversationId: result.conversationId,
+        handoffRescue: result.handoffRescue,
         // Which session this job continued, and whether the runtime actually
         // honoured it. Recorded even when the answer is "it did not": a job
         // that asked to resume and silently got a fresh session is the one

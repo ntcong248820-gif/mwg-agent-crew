@@ -11,14 +11,14 @@
  *
  * Run: node plugins/agent-crew/tests/codex-lifecycle.test.mjs
  */
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, renameSync, mkdirSync } from "node:fs";
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createRun, addJob, claimRunSlot, readManifest } from "../scripts/crew-manifest.mjs";
 import { resolveLogDir } from "../scripts/codex-run.mjs";
-import { FIXTURE_BIN, FIXTURES, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { FIXTURE_BIN, MODULE_ROOT, makeChecker, seedLegacyJob, tmpWorkspace, writeFile } from "./helpers.mjs";
 import { DEFAULT_LAYOUT, LEGACY_LAYOUT } from "../scripts/lib/crew-layout.mjs";
 
 const t = makeChecker("codex-lifecycle");
@@ -156,197 +156,85 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   t.check("...while the history stays in notes", after.notes.length > 0, "true");
 }
 
-// --- the app transport: a real thread in the Codex app, faked ---------------
+// --- Codex is headless only: the entry refuses the app transport -----------
 {
-  // The fake exists because these shapes cannot be produced on demand by the
-  // real companion, and because a test that opens real threads costs tokens.
-  // Every case below is a way the transport could fail without saying so.
-  const FAKE = join(FIXTURES, "fake-companion.mjs");
+  // Refused at the top of the entry, not inside the manifest branch: a check
+  // that only fired with --manifest would leave the adapter run by hand as a
+  // way back to the transport.
+  const bare = run({ mode: "ok", evidence: join(RUN_DIR_REL, "app-by-hand.md"), extra: ["--mode", "app"] });
+  t.check("--mode app with no manifest is refused", bare.exit, 1);
+  t.check("...pointing at headless --resume", bare.stderr.includes("--resume <conversationId>"), "true");
+  t.check("...and nothing ran", existsSync(join(ws, RUN_DIR_REL, "app-by-hand.md")), "false");
 
-  const runApp = ({ mode, evidence, body = DONE_BODY, extra = [], companion = FAKE, marker = null, timeoutSec = 20, result = null, race = null, raceState = null }) => {
-    const proc = spawnSync("node", [
-      ADAPTER,
-      "--mode", "app",
-      "--prompt-file", brief,
-      "--evidence", evidence,
-      "--workspace", ws,
-      "--timeout", `${timeoutSec}s`,
-      "--effort", "low",
-      ...extra,
-    ], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${FIXTURE_BIN}:${process.env.PATH}`,
-        FAKE_MODE: "ok",
-        MWG_CODEX_COMPANION: companion,
-        FAKE_COMPANION_MODE: mode,
-        FAKE_COMPANION_EVIDENCE: join(ws, evidence),
-        FAKE_COMPANION_BODY: body,
-        ...(result ? { FAKE_COMPANION_RESULT: result } : {}),
-        ...(race ? { FAKE_COMPANION_RACE: race, FAKE_COMPANION_RACE_STATE: raceState } : {}),
-        ...(marker ? { FAKE_COMPANION_MARKER: marker } : {}),
-      },
-      timeout: (timeoutSec + 30) * 1000,
-    });
-    return {
-      exit: proc.status,
-      stderr: proc.stderr ?? "",
-      json: (() => { try { return JSON.parse(proc.stdout); } catch { return null; } })(),
-    };
+  // A run from before 2.0.4 can still hold a pending Codex app job. Dispatching
+  // it fails, on the record, with the way to redo it -- not silently as headless.
+  const dir = join(ws, RUN_DIR_REL, "legacy-app-pending");
+  const { manifestPath: mp } = createRun({ runDir: dir, runId: "legacy-app", task: "t", workspace: ws, depth: 0 });
+  seedLegacyJob(mp, {
+    worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau",
+    title: "legacy app", evidence: join(RUN_DIR_REL, "legacy-app-pending", "w.md"),
+  });
+  const legacy = run({
+    mode: "ok", evidence: join(RUN_DIR_REL, "legacy-app-pending", "w.md"),
+    extra: ["--mode", "app", "--manifest", mp, "--job", "1"],
+  });
+  const job = readManifest(mp).jobs[0];
+  t.check("a legacy pending codex app job is refused at dispatch", legacy.exit, 1);
+  t.check("...recorded as failed", job.status, "failed");
+  t.check("...with the headless way to redo it", job.failure.includes("Codex chỉ chạy headless"), "true");
+  t.check("...and the record it came from left as it was", job.transport, "app");
+  t.check("...with nothing written at the evidence path", existsSync(join(ws, RUN_DIR_REL, "legacy-app-pending", "w.md")), "false");
+}
+
+// --- soft deadline and the handoff rescue -----------------------------------
+{
+  // A long job used to end one way at its ceiling: killed, evidence half-written,
+  // thread abandoned. Now the brief names a soft deadline, and a job that still
+  // hits the hard one gets one short turn on the same thread to write a handoff.
+  const brief20 = run({ mode: "briefdump", evidence: join(RUN_DIR_REL, "soft-20m.md"), timeoutSec: 1200 });
+  const body20 = readFileSync(join(ws, RUN_DIR_REL, "soft-20m.md"), "utf8");
+  t.check("a 20m job's brief carries the soft deadline", brief20.exit === 0 && /Hạn mềm \d\d:\d\d/.test(body20), true);
+  t.check("...and the four handoff sections", body20.includes("`### Đang dở`") && body20.includes("Status: CONTINUE"), true);
+  run({ mode: "briefdump", evidence: join(RUN_DIR_REL, "soft-5m.md"), timeoutSec: 300 });
+  t.check("a 5m job's brief has no soft deadline", readFileSync(join(ws, RUN_DIR_REL, "soft-5m.md"), "utf8").includes("Hạn mềm"), false);
+
+  const hang = (name, mode, { idle = "3s", timeoutSec = 4 } = {}) => {
+    const dir = join(ws, RUN_DIR_REL, `rescue-${name}`);
+    const { manifestPath: mp } = createRun({ runDir: dir, runId: `rescue-${name}`, task: "t", workspace: ws, depth: 0 });
+    // One basename per case: the log dir is shared by the run folder, and a
+    // reused name is refused as an earlier run's sidecar before anything runs.
+    const ev = join(RUN_DIR_REL, `rescue-${name}`, `rescue-${name}.md`);
+    addJob(mp, { worker: "codex", role: "owner", title: name, evidence: ev });
+    const mark = join(ws, `rescue-${name}.mark`);
+    const r = run({ mode, evidence: ev, timeoutSec, extra: ["--idle-timeout", idle, "--manifest", mp, "--job", "1"], env: { FAKE_RESCUE_MARK: mark } });
+    const calls = existsSync(mark) ? readFileSync(mark, "utf8").trim().split("\n").filter(Boolean) : [];
+    const evAbs = join(ws, ev);
+    return { r, job: readManifest(mp).jobs[0], calls, evidence: existsSync(evAbs) ? readFileSync(evAbs, "utf8") : null };
   };
 
-  const ok = runApp({ mode: "ok", evidence: join(RUN_DIR_REL, "app-ok.md") });
-  t.check("an app job exits 0", ok.exit, 0);
-  t.check("...judged off the evidence", ok.json?.status, "done");
-  t.check("...recorded as the app transport", ok.json?.mode, "app");
-  t.check("...with the thread id as provenance", ok.json?.conversationId, "01a037ab-924f-7fe1-b76a-9bfd7e329ded");
-  t.check("...and no fake exit code claiming a clean exit", `${ok.json?.exitCode}`, "null");
-  t.check("...while the companion job id stays traceable", ok.json?.companionJobId, "task-fake-0001");
+  const ok = hang("ok", "hang_handoff");
+  t.check("hard timeout → rescue → job is continue", ok.r.json?.status, "continue");
+  t.check("...exit 3: someone has to resume it", ok.r.exit, 3);
+  t.check("...rescue ran exactly once, on the same thread", ok.calls.length === 1 && ok.calls[0].includes("resume 01a04169-2763-79d1-9037-6dc85981fad1"), true);
+  t.check("...and was handed the rescue prompt, not the brief", ok.calls[0].includes("exec"), true);
+  t.check("...the manifest records continue and the rescue", `${ok.job.status}|${ok.job.handoffRescue?.ran}|${ok.job.handoffRescue?.ok}`, "continue|true|true");
+  t.check("...usage comes from the rescue turn, the killed turn never completed", ok.job.usage?.input_tokens, 4242);
+  t.check("...the evidence keeps the first part and adds the handoff", ok.evidence.startsWith("phần đầu") && ok.evidence.includes("## Handoff"), true);
+  t.check("...the kill stays on the record", /exceeded/.test(ok.job.killedFor ?? ok.r.json?.killedFor ?? ""), true);
+  t.check("...without a runtime disagreement (the timeout is what CONTINUE means)", Boolean(ok.job.runtimeVerdict), false);
 
-  // The gap this transport had next to headless: the job ran, the evidence was
-  // judged, and what the worker actually said was thrown away.
-  t.check("...the worker's reply is fetched and filed", Boolean(ok.json?.lastMessage), "true");
-  t.check("...with text in it", readFileSync(ok.json.lastMessage, "utf8").includes("Đã ghi evidence"), "true");
-  t.check("...no reply error on the happy path", `${ok.json?.replyError}`, "null");
-  t.check("...the companion's own exit status is recorded", ok.json?.companionExitStatus, 0);
-  t.check("...separately from exitCode, which the gate reads", `${ok.json?.exitCode}`, "null");
-  t.check("...and the files the runtime says it wrote", ok.json?.touchedFiles?.length, 1);
+  const stuck = hang("stuck", "hang_rescue_hang");
+  t.check("a rescue that times out itself → failed", `${stuck.r.exit}|${stuck.job.status}`, "1|failed");
+  t.check("...rescue tried once, recorded as not ok", `${stuck.calls.length}|${stuck.job.handoffRescue?.ok}`, "1|false");
+  t.check("...the job was resolved once (one failure line)", stuck.r.stderr.split("\n").filter((l) => l.startsWith("codex-run: the ")).length, 1);
 
-  // Three ways the reply can be lost. None of them is a failed job: the
-  // evidence already decided that, and a thinner record is not a failure.
-  for (const [rmode, label] of [["crash", "result exits non-zero"], ["empty", "result is empty"], ["no_result", "result has no stored result"]]) {
-    const r = runApp({ mode: "ok", result: rmode, evidence: join(RUN_DIR_REL, `app-reply-${rmode}.md`) });
-    t.check(`a job whose ${label} still exits 0`, r.exit, 0);
-    t.check(`...${label}: no reply file claimed`, `${r.json?.lastMessage}`, "null");
-    t.check(`...${label}: and the reason is on the record`, Boolean(r.json?.replyError), "true");
-  }
+  const bare = hang("bare", "hang_rescue_nostatus");
+  t.check("a rescue that writes no Status → failed as before", `${bare.r.exit}|${bare.job.status}|${bare.calls.length}`, "1|failed|1");
 
-  // Doctrine: evidence on disk outranks the runtime's verdict, including failed.
-  const failed = runApp({ mode: "failed", evidence: join(RUN_DIR_REL, "app-failed.md") });
-  t.check("companion says failed but the evidence stands", failed.json?.status, "done");
-  t.check("...and the disagreement is surfaced, not resolved", Boolean(failed.json?.runtimeVerdict), "true");
-  t.check("...so it exits 3, not 0", failed.exit, 3);
-
-  // A job that outlives its allowance must be cancelled, not left running
-  // against a workspace nobody is watching.
-  const marker = join(ws, "cancel-marker.txt");
-  const mfDir = join(ws, RUN_DIR_REL, "app-timeout-case");
-  const { manifestPath: tmp } = createRun({ runDir: mfDir, runId: "app-to", task: "t", workspace: ws, depth: 0 });
-  addJob(tmp, {
-    worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau",
-    title: "app timeout",
-    evidence: join(RUN_DIR_REL, "app-timeout-case", "late.md"),
-  });
-  const timedOut = runApp({
-    mode: "timeout", body: "", marker,
-    evidence: join(RUN_DIR_REL, "app-timeout-case", "late.md"),
-    extra: ["--manifest", tmp, "--job", "1"],
-  });
-  t.check("a job that never settles fails", timedOut.exit, 1);
-  t.check("...and cancel was actually called", readFileSync(marker, "utf8").includes("cancel"), "true");
-  const toJob = readManifest(tmp).jobs[0];
-  t.check("...with a failure the manifest can show", Boolean(toJob.failure), "true");
-  t.check("...naming the transport that stalled", toJob.failure.includes("companion job did not settle"), "true");
-
-  // The other way a job goes unwatched: not "it never settled" but "the call
-  // that was watching it died". Cancel used to be reachable only through a
-  // returned snapshot, so this path left a live background job with nobody on
-  // it -- still writing, still spending.
-  const deadMarker = join(ws, "marker-status-dead.txt");
-  writeFileSync(deadMarker, "");
-  const { manifestPath: dmf } = createRun({ runDir: join(ws, "mf-dead"), runId: "app-dead", task: "t", workspace: ws, depth: 0 });
-  addJob(dmf, {
-    worker: "codex", role: "assist", transport: "app", title: "app status dead",
-    note: "ca thử: mất dấu job app giữa đường",
-    evidence: join(RUN_DIR_REL, "app-dead-case", "x.md"),
-  });
-  const dead = runApp({
-    mode: "status_dead", body: "", marker: deadMarker,
-    evidence: join(RUN_DIR_REL, "app-dead-case", "x.md"),
-    extra: ["--manifest", dmf, "--job", "1"],
-  });
-  t.check("a job whose status call dies fails", dead.exit, 1);
-  t.check("...and is cancelled rather than abandoned", readFileSync(deadMarker, "utf8").includes("cancel"), "true");
-  t.check("...with the death recorded in the manifest", readManifest(dmf).jobs[0].status, "failed");
-
-  // --- the adapter's own death ---------------------------------------------
-  // This adapter exists so that a death gets recorded instead of reading as
-  // `pending` forever -- and its own death was the one nobody recorded. A
-  // SIGTERM does not pass through a try/catch: Node exits, leaving the job it
-  // marked `running` marked `running` for good.
-  //
-  // Measured on the HEADLESS path on purpose. The app path waits inside
-  // `spawnSync`, which blocks the event loop, so Node cannot deliver a signal
-  // to a handler until that call returns -- the handler is real but unreachable
-  // there. Recovery for an app job killed mid-wait runs through the gate
-  // instead: `companionJobId` is written at dispatch, so the stale-job check
-  // and `crew-reconcile --cancel-orphans` can find it. Slower, but not lost.
-  {
-    const { manifestPath: smf } = createRun({ runDir: join(ws, "mf-sig"), runId: "hl-sig", task: "t", workspace: ws, depth: 0 });
-    addJob(smf, {
-      worker: "codex", role: "assist", transport: "headless", title: "headless killed",
-      evidence: join(RUN_DIR_REL, "hl-sig-case", "x.md"),
-    });
-    const child = spawn(process.execPath, [
-      ADAPTER, "--mode", "headless", "--prompt-file", brief,
-      "--evidence", join(RUN_DIR_REL, "hl-sig-case", "x.md"),
-      "--workspace", ws, "--timeout", "25s", "--idle-timeout", "20s", "--effort", "low",
-      "--manifest", smf, "--job", "1",
-    ], {
-      env: {
-        ...process.env,
-        PATH: `${FIXTURE_BIN}:${process.env.PATH}`,
-        // Emits only on stderr and never exits, so the adapter is genuinely
-        // mid-job -- with its event loop free -- when the signal lands.
-        FAKE_MODE: "stderr_only",
-        FAKE_EVIDENCE: join(ws, RUN_DIR_REL, "hl-sig-case", "x.md"),
-      },
-      stdio: "ignore",
-    });
-    const waitUntil = (fn, ms) => {
-      const deadline = Date.now() + ms;
-      while (Date.now() < deadline) {
-        if (fn()) return true;
-        spawnSync("sleep", ["0.2"]);
-      }
-      return false;
-    };
-    t.check("the adapter marks the job running before working",
-      waitUntil(() => readManifest(smf).jobs[0].status === "running", 15_000), true);
-    child.kill("SIGTERM");
-    waitUntil(() => readManifest(smf).jobs[0].status === "failed", 15_000);
-    const killed = readManifest(smf).jobs[0];
-    t.check("a SIGTERMed adapter records the job as failed", killed.status, "failed");
-    t.check("...naming the signal as the cause", /SIGTERM/.test(killed.failure ?? ""), true);
-    t.check("...so nothing is left reading as running", killed.status === "running", false);
-  }
-
-  const noId = runApp({ mode: "no_job_id", evidence: join(RUN_DIR_REL, "app-noid.md") });
-  t.check("a dispatch with no jobId is refused", noId.exit, 1);
-  t.check("...naming the field that is missing", noId.stderr.includes("no jobId"), "true");
-
-  const garbage = runApp({ mode: "not_json", evidence: join(RUN_DIR_REL, "app-garbage.md") });
-  t.check("non-JSON output is refused", garbage.exit, 1);
-  t.check("...instead of an undefined travelling downstream", garbage.stderr.includes("did not print JSON"), "true");
-
-  const crashed = runApp({ mode: "crash", evidence: join(RUN_DIR_REL, "app-crash.md") });
-  t.check("a companion that exits non-zero fails the job", crashed.exit, 1);
-  t.check("...quoting its stderr", crashed.stderr.includes("codex is not available"), "true");
-
-  // Falling back to headless here would be the silent substitution this whole
-  // harness exists to catch: the manifest would say app, no thread would open.
-  const missing = runApp({
-    mode: "ok", companion: join(ws, "nope", "codex-companion.mjs"),
-    evidence: join(RUN_DIR_REL, "app-missing.md"),
-  });
-  t.check("a companion that is not there fails loudly", missing.exit, 1);
-  t.check("...listing where it looked", missing.stderr.includes("probed:"), "true");
-  // The override is authoritative: searching past a path someone named would
-  // hand them a different companion than the one they asked for -- and this
-  // test proved it, by reaching the real install on the first attempt.
-  t.check("...saying the override is the thing to fix", missing.stderr.includes("MWG_CODEX_COMPANION points at nothing"), "true");
-  t.check("...and never falling back to headless", missing.json, "null");
+  const idle = hang("idle", "hang_silent", { idle: "2s", timeoutSec: 30 });
+  t.check("an idle kill gets no rescue", idle.calls.length, 0);
+  t.check("...and fails as before, killed for silence", `${idle.job.status}|${/no stdout event/.test(idle.job.failure ?? "")}`, "failed|true");
+  t.check("...with no rescue on the record", `${idle.job.handoffRescue}`, "undefined");
 }
 
 // --- the manifest and the flag must agree on the transport ------------------
@@ -355,7 +243,9 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   // as one transport and fired down the other is worse than no record at all.
   const dir = join(ws, RUN_DIR_REL, "transport-clash");
   const { manifestPath: mp } = createRun({ runDir: dir, runId: "clash", task: "t", workspace: ws, depth: 0 });
-  addJob(mp, {
+  // Seeded as a legacy record: `addJob` no longer files Codex as app, but a run
+  // from before that still can, and the clash check has to keep reading it.
+  seedLegacyJob(mp, {
     worker: "codex", role: "owner", transport: "app", note: "việc khám phá, chưa viết nổi acceptance",
     title: "filed as app",
     evidence: join(RUN_DIR_REL, "transport-clash", "w.md"),
@@ -429,97 +319,6 @@ t.check("...and the message prints real CLI spellings", typo.stderr.includes("--
   try { resolveCompanion({}, join(ws, "empty-home")); } catch (err) { msg = `${err.message}|${err.detail}`; }
   t.check("nothing found says so", msg.startsWith("could not find codex-companion.mjs"), "true");
   t.check("...and lists the paths it tried", msg.includes("probed:"), "true");
-}
-
-// --- the dispatch race, replayed --------------------------------------------
-{
-  // Two app jobs fired in the same instant both died about fifteen seconds in,
-  // in two different ways, and staggering them by five seconds made both pass.
-  // So the store contradicts itself briefly and then settles. These cases hold
-  // the adapter to riding that out -- and to still failing when it is not a
-  // race at all.
-  const FAKE = join(FIXTURES, "fake-companion.mjs");
-  const raceRun = ({ race, evidence, stateFile }) => {
-    writeFile(stateFile, "0");
-    const proc = spawnSync("node", [
-      ADAPTER, "--mode", "app", "--prompt-file", brief, "--evidence", evidence,
-      "--workspace", ws, "--timeout", "20s", "--effort", "low",
-    ], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${FIXTURE_BIN}:${process.env.PATH}`,
-        FAKE_MODE: "ok",
-        MWG_CODEX_COMPANION: FAKE,
-        FAKE_COMPANION_MODE: "ok",
-        FAKE_COMPANION_EVIDENCE: join(ws, evidence),
-        FAKE_COMPANION_BODY: DONE_BODY,
-        FAKE_COMPANION_RACE: race,
-        FAKE_COMPANION_RACE_STATE: stateFile,
-      },
-      timeout: 120_000,
-    });
-    return {
-      exit: proc.status,
-      stderr: proc.stderr ?? "",
-      json: (() => { try { return JSON.parse(proc.stdout); } catch { return null; } })(),
-    };
-  };
-
-  // Shape one: the store denies the id its own dispatch just returned.
-  const denied = raceRun({
-    race: "no_job_found:1",
-    evidence: join(RUN_DIR_REL, "app-race-denied.md"),
-    stateFile: join(ws, "race-denied.count"),
-  });
-  t.check("a denied id right after dispatch is ridden out", denied.exit, 0);
-  t.check("...and the job is judged off its evidence", denied.json?.status, "done");
-  // Recorded, not swallowed: a tolerated race whose frequency nobody can see is
-  // a race nobody will fix.
-  t.check("...with the retry counted", denied.json?.settleRetries, 1);
-  t.check("...and why it retried", /chưa thấy job/.test(denied.json?.settleRaceWhy ?? ""), true);
-
-  // Shape two: a job object with no `status` at all, and waitTimedOut false.
-  const statusless = raceRun({
-    race: "no_status:1",
-    evidence: join(RUN_DIR_REL, "app-race-nostatus.md"),
-    stateFile: join(ws, "race-nostatus.count"),
-  });
-  t.check("a job with no status yet is ridden out", statusless.exit, 0);
-  t.check("...with the retry counted", statusless.json?.settleRetries, 1);
-  t.check("...and a different reason recorded", /chưa có status/.test(statusless.json?.settleRaceWhy ?? ""), true);
-
-  // A clean run must not claim a retry it never made, or the field stops being
-  // usable for measuring how often the race fires.
-  const clean = raceRun({
-    race: "no_job_found:0",
-    evidence: join(RUN_DIR_REL, "app-race-none.md"),
-    stateFile: join(ws, "race-none.count"),
-  });
-  t.check("a run with no race records no retry", `${clean.json?.settleRetries}`, "undefined");
-
-  // The guard that keeps the retry from doubling a long wait: if the call did
-  // wait out its whole allowance and still has no status, that is a broken
-  // answer, not a store catching up, and retrying would spend the allowance
-  // again.
-  const waitedAndBroken = raceRun({
-    race: "no_status_waited:1",
-    evidence: join(RUN_DIR_REL, "app-race-waited.md"),
-    stateFile: join(ws, "race-waited.count"),
-  });
-  t.check("a statusless answer that did wait is not retried", waitedAndBroken.exit, 1);
-  t.check("...and fails as a broken answer, not as a race", /returned no job\.status/.test(waitedAndBroken.stderr), true);
-
-  // The window has to run out. A store that never settles is a dead job, and
-  // this adapter exists because a dead job once went unnoticed for twenty
-  // minutes -- tolerating it forever would rebuild that bug.
-  const forever = raceRun({
-    race: "no_job_found:9999",
-    evidence: join(RUN_DIR_REL, "app-race-forever.md"),
-    stateFile: join(ws, "race-forever.count"),
-  });
-  t.check("a store that never settles still fails", forever.exit, 1);
-  t.check("...naming the window rather than the raw error", /never gave job .* a status within/.test(forever.stderr), true);
 }
 
 // --- the credential store, through the real adapter ------------------------

@@ -79,5 +79,49 @@ case "$FAKE_MODE" in
     printf '{"type":"turn.completed"}\n'
     printf 'did some work and forgot the contract\n' > "$EV"
     exit 0 ;;
+  hang_handoff|hang_rescue_hang|hang_rescue_nostatus|hang_silent)
+    # A job that runs past its timeout. The first call works forever (emitting
+    # events so the idle watchdog stays quiet); the handoff rescue arrives as
+    # `exec ... resume <id>`, and what it does depends on the mode.
+    # FAKE_RESCUE_MARK records each rescue call, so "no rescue" is observable.
+    if [[ " $* " == *" resume "* ]]; then
+      [ -n "$FAKE_RESCUE_MARK" ] && echo "rescue $*" >> "$FAKE_RESCUE_MARK"
+      cat > /dev/null
+      case "$FAKE_MODE" in
+        hang_handoff)
+          printf '{"type":"turn.completed","usage":{"input_tokens":4242,"output_tokens":7}}\n'
+          printf '\n## Handoff\n### Đã xong\n- bước 1\n### Đang dở\n- bước 2\n### Bước kế tiếp\n- làm nốt bước 2\n### File đã đụng\nKhông có\n\nStatus: CONTINUE\n' >> "$EV"
+          exit 0 ;;
+        hang_rescue_hang) exec sleep 60 ;;
+        hang_rescue_nostatus) printf '{"type":"turn.completed"}\n'; exit 0 ;;
+      esac
+    fi
+    cat > /dev/null
+    printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD_ID:-01a04169-2763-79d1-9037-6dc85981fad1}"
+    printf 'phần đầu của việc\n' > "$EV"
+    if [ "$FAKE_MODE" = "hang_silent" ]; then exec sleep 60; fi
+    while :; do printf '{"type":"item.updated"}\n'; sleep 1; done ;;
+  chain)
+    # Một lát của chuỗi `--chain`. Evidence mỗi lát một file, nên đọc đường từ
+    # dòng hợp đồng trong brief thay vì FAKE_EVIDENCE. Lượt thứ N (đếm trong
+    # FAKE_CHAIN_DIR/count) chép FAKE_CHAIN_DIR/N.md vào evidence; có N.work thì
+    # ghi thêm một file việc trong thư mục run; có N.sleep thì ngủ sau đó.
+    # Resume thì trả đúng thread được xin, trừ lượt FAKE_CHAIN_SPLIT (thread lạ).
+    BRIEF=$(cat)
+    REL=$(printf '%s\n' "$BRIEF" | sed -n 's/.*Chỉ được ghi đúng file: \([^ ,]*\).*/\1/p' | head -1)
+    EVP="$PWD/$REL"
+    N=$(( $(cat "$FAKE_CHAIN_DIR/count" 2>/dev/null || echo 0) + 1 )); echo "$N" > "$FAKE_CHAIN_DIR/count"
+    TID="${FAKE_THREAD_ID:-0c4a1e2b-3d5f-4a6b-8c7d-9e0f1a2b3c4d}"
+    prev=""; for a in "$@"; do [ "$prev" = resume ] && TID="$a"; prev="$a"; done
+    [ -n "$FAKE_CHAIN_SPLIT" ] && [ "$N" = "$FAKE_CHAIN_SPLIT" ] && TID="5f1e2d3c-4b5a-4968-8776-655443322110"
+    printf '{"type":"thread.started","thread_id":"%s"}\n' "$TID"
+    # usage tổng dồn của thread như Codex thật: lượt N báo N*1000 input.
+    printf '{"type":"turn.completed","usage":{"input_tokens":%s,"output_tokens":10}}\n' "$((N * 1000))"
+    printf '%s\nARGV=%s\n' "$BRIEF" "$*" > "$FAKE_CHAIN_DIR/brief-$N.txt"
+    [ -f "$FAKE_CHAIN_DIR/$N.md" ] || exit 1   # không có kịch bản cho lượt này: worker chết
+    [ -f "$FAKE_CHAIN_DIR/$N.work" ] && date > "$(dirname "$EVP")/work-$N.txt"
+    cp "$FAKE_CHAIN_DIR/$N.md" "$EVP"
+    [ -f "$FAKE_CHAIN_DIR/$N.sleep" ] && exec sleep "$(cat "$FAKE_CHAIN_DIR/$N.sleep")"
+    exit 0 ;;
   *) echo "fake-codex: unknown FAKE_MODE '$FAKE_MODE'" >&2; exit 99 ;;
 esac

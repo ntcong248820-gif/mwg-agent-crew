@@ -6,6 +6,11 @@
  *   costGate         API tính tiền theo lượt: worker gặp thì dừng, trả COST_GATE
  *   redactConfig     file JSON (thường gitignored) chứa mục `redact` cho bộ che
  *                    dữ liệu của state phiên và export transcript
+ *   modelTiers       ghi đè bảng bậc `--tier` (regex tên agy, bậc app, effort
+ *                    Codex) khi nhà cung cấp đổi lược đặt tên — xem model-tiers.mjs
+ *   delegate         "default" | "aggressive": aggressive = gate gợi ý giao việc
+ *                    code/research từ 1 đầu việc, có trigger mặc định
+ *                    (default-routing-triggers.mjs) khi repo không khai
  *
  * Luật viết bằng lời (task tạo ở đâu, đóng task thế nào, connector nào cấm) nằm
  * ở CLAUDE.md/AGENTS.md của dự án — agent đọc được văn xuôi, hook thì không.
@@ -15,6 +20,10 @@
  * chúng. Đó là đường lách cổng chi phí, không phải tối ưu token.
  */
 import { CONFIG_NAME, LayoutError, assertRelPath, loadLayout, readConfigRaw } from "./crew-layout.mjs";
+import { normalizeModelTiers } from "./model-tiers.mjs";
+import { withDefaultTriggers } from "./default-routing-triggers.mjs";
+
+export const DELEGATE_MODES = Object.freeze(["default", "aggressive"]);
 
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -78,7 +87,10 @@ export function loadCrewConfig(workspace) {
   const layout = loadLayout(workspace);
   const raw = readConfigRaw(workspace) ?? {};
   const costGate = normalizeCostGate(raw.costGate);
-  const routingTriggers = compileTriggers(raw.routingTriggers, costGate);
+  const delegate = raw.delegate ?? "default";
+  if (!DELEGATE_MODES.includes(delegate)) fail(`delegate phải là ${DELEGATE_MODES.join(" | ")}, nhận ${JSON.stringify(raw.delegate)}`);
+  const repoTriggers = compileTriggers(raw.routingTriggers, costGate);
+  const routingTriggers = delegate === "aggressive" ? withDefaultTriggers(repoTriggers, costGate) : repoTriggers;
   let routingLog = null;
   if (raw.routingLog !== undefined && raw.routingLog !== null) {
     try {
@@ -99,7 +111,8 @@ export function loadCrewConfig(workspace) {
     if (!raw.redactConfig.endsWith(".json")) fail(`redactConfig phải là file .json: "${raw.redactConfig}"`);
     redactConfig = raw.redactConfig;
   }
-  return Object.freeze({ layout, routingTriggers: Object.freeze(routingTriggers), routingLog, costGate: Object.freeze(costGate), redactConfig });
+  const modelTiers = normalizeModelTiers(raw.modelTiers, fail);
+  return Object.freeze({ layout, routingTriggers: Object.freeze(routingTriggers), routingLog, costGate: Object.freeze(costGate), redactConfig, modelTiers, delegate });
 }
 
 /** Prompt có nhắc API tốn tiền nào không (so tên, không phân biệt hoa thường). */

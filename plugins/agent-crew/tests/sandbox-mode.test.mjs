@@ -33,9 +33,9 @@ const RUN_DIR_REL = join("tasks", "t", "reports", "crew-test");
 mkdirSync(join(ws, RUN_DIR_REL), { recursive: true });
 const brief = writeFile(join(ws, "brief.md"), "do the thing\n");
 
-function run({ evidence, extra = [], env = {}, mode = "argvdump" }) {
+function run({ evidence, extra = [], env = {}, mode = "argvdump", adapter = ADAPTER }) {
   const proc = spawnSync("node", [
-    ADAPTER,
+    adapter,
     "--prompt-file", brief,
     "--evidence", evidence,
     "--workspace", ws,
@@ -125,20 +125,6 @@ const ranNothing = (evidence) => !existsSync(join(ws, evidence));
   t.check("a near-miss flag name is refused, not ignored", r.exit !== 0, true);
   t.check("...and names the flags it knows", /--sandbox-mode/.test(r.stderr), true);
   t.check("...and no worker was spawned", ranNothing(evidence), true);
-}
-
-// --- app mode cannot honour it --------------------------------------------
-
-{
-  // Measured 22/09: an app-mode probe writing to $HOME came back "Operation not
-  // permitted" exactly like sandboxed headless, and its browser was gone as
-  // well. The app sandboxes dispatched tasks itself, so accepting this flag
-  // would hand back a job that looks unsandboxed and is not.
-  const evidence = join(RUN_DIR_REL, "appmode.md");
-  const r = run({ evidence, extra: ["--mode", "app", "--sandbox-mode", "danger-full-access"] });
-  t.check("app mode refuses the flag", r.exit !== 0, true);
-  t.check("...and explains the app decides, not this adapter", /app sandboxes dispatched tasks/.test(r.stderr), true);
-  t.check("...and points at the transport that works", /--mode headless/.test(r.stderr), true);
 }
 
 // --- the manifest has to remember the permission level ---------------------
@@ -247,19 +233,6 @@ function newRun(name) {
   t.check("an unsandboxed job still runs", r.exit, 0);
   t.check("...and still never sees the keyring override", /KEYRING=absent/.test(body), true);
   t.check("...and still carries the recursion guard", /ROLE=worker/.test(body), true);
-}
-
-{
-  // Mirrors --workspace-cli, which accepts `off` in app mode and refuses `on`.
-  // A dispatcher template that passes the default level uniformly must not
-  // break every app job -- and telling it "use headless for full permissions"
-  // when it asked for the default would answer a question it never asked.
-  const evidence = join(RUN_DIR_REL, "app-default.md");
-  const r = run({ evidence, extra: ["--mode", "app", "--sandbox-mode", "workspace-write"] });
-  // The app path fails here for its own reasons (no companion in the fixture
-  // environment); all this asserts is that the sandbox check is not the one
-  // stopping it.
-  t.check("app mode does not refuse the default level", /sandbox-mode .* is not available in app mode/.test(r.stderr), false);
 }
 
 {

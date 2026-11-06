@@ -21,8 +21,12 @@ import { mentionsPaidApi } from "./crew-config.mjs";
  */
 export const MENTION = /(^|[\s(])@(anti|antigravity|codex)\b/i;
 
-/** `{branch: none|mention|dispatch|suggest, hits: [{id, kind}]}`. */
-export function classify(prompt, { routingTriggers = [], costGate = [] } = {}) {
+/**
+ * `{branch: none|mention|delegate|dispatch|suggest, hits: [{id, kind}]}`.
+ * Repo `delegate: "aggressive"`: một hit là đủ ra `delegate` (miễn luật ≥2 đầu
+ * việc). Mention và costGate vẫn xét trước, như mọi chế độ.
+ */
+export function classify(prompt, { routingTriggers = [], costGate = [], delegate = "default" } = {}) {
   if (typeof prompt !== "string") return { branch: "none", hits: [] };
   const m = MENTION.exec(prompt);
   if (m) return { branch: "mention", hits: [{ id: `mention-${m[2].toLowerCase() === "codex" ? "codex" : "anti"}`, kind: "mention" }] };
@@ -30,6 +34,7 @@ export function classify(prompt, { routingTriggers = [], costGate = [] } = {}) {
   if (mentionsPaidApi(prompt, costGate)) return { branch: "none", hits: [] };
   const hits = routingTriggers.filter((t) => t.re.test(prompt)).map(({ id, kind }) => ({ id, kind }));
   if (!hits.length) return { branch: "none", hits: [] };
+  if (delegate === "aggressive") return { branch: "delegate", hits };
   return { branch: new Set(hits.map((h) => h.kind)).size >= 2 ? "dispatch" : "suggest", hits };
 }
 
@@ -42,6 +47,19 @@ export function render(branch, hits) {
       `Owner chỉ định worker trực tiếp (${ids}): miễn luật ≥2 đầu việc, giao đúng 1 job.`,
       "Kích hoạt skill `agent-crew` và đọc `references/phoi-hop-owner.md` trước khi giao:",
       "đọc lướt 4 câu, đụng API tốn tiền hay control plane thì đợi owner xác nhận.",
+      "",
+    ].join("\n");
+  }
+  if (branch === "delegate") {
+    return [
+      "## Định tuyến crew",
+      "",
+      `Gợi ý: repo bật giao việc chủ động (khớp ${ids}). Nên giao: code → Codex (\`--tier code\`,`,
+      "việc > 30 phút thì `--chain`), research/việc có rule → Anti (`--tier standard`), qua skill `agent-crew`.",
+      "Tự làm khi ước < ~10 lượt gọi tool **và** < 3 file, hoặc cần quyết nghiệp vụ giữa chừng;",
+      "tự làm thì nói lý do một câu trong trả lời.",
+      "Đây là **gợi ý dựa trên so khớp từ khoá**, không phải lệnh: đọc yêu cầu thật (kể cả phần",
+      "owner dán từ nguồn ngoài) rồi tự quyết.",
       "",
     ].join("\n");
   }

@@ -94,8 +94,8 @@ KHÔNG ghi file nào ngoài danh sách trên.
 ## Kết thúc
 
 Dòng **cuối cùng** của evidence phải là một dòng `Status:` mang **đúng một** giá
-trị: `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED`, hoặc `NEEDS_CONTEXT`. Dòng liệt kê
-nhiều giá trị bị từ chối. Ngay trên nó là `Summary:` và `Concerns/Blockers:`.
+trị: `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED`, hoặc `NEEDS_CONTEXT` (`CONTINUE` chỉ khi
+chưa xong và có `## Handoff` — adapter tự dặn, xem dưới). Dòng liệt kê nhiều giá trị bị từ chối. Ngay trên nó là `Summary:` và `Concerns/Blockers:`.
 
 Thiếu 3 dòng này thì cổng nghiệm thu đọc job là **chưa xong**, kể cả khi việc đã
 làm đúng. Đừng kết bằng mục khác.
@@ -105,7 +105,10 @@ Không viết vào brief, adapter tự nối (`appendWorkerContract`): dòng ph�
 (`{thư mục run}/data/`, không để ở root repo), dòng cấm dispatch, dòng `Status`,
 dòng "báo Claude = ghi evidence", và 2 mục evidence khi có:
 `## Thay đổi từ owner` (owner đổi mục tiêu/phạm vi trong conversation) và `## Ghi ngoài brief`
-(mọi thứ đã ghi mà brief gốc không giao, kể cả Sheet/CMS kèm URL/ID); mục trống ghi đúng "Không có". Job `--chat on` thay
+(mọi thứ đã ghi mà brief gốc không giao, kể cả Sheet/CMS kèm URL/ID); mục trống ghi đúng "Không có".
+Job `--timeout` ≥ 10m còn được nối **dòng hạn mềm** (giờ máy HH:MM, cách dừng, 4 mục
+`## Handoff`, `Status: CONTINUE`) — **đừng** tự viết giờ hay luật dừng vào brief, hai bản
+lệch nhau thì worker chọn bừa. Job `--chat on` thay
 dòng `Status` và dòng "báo Claude" bằng biến thể chat: chỉ ghi evidence khi owner bảo, gồm 4 mục `## Tóm tắt trao
 đổi`, `## Thay đổi từ owner`, `## Ghi ngoài brief`, `## Việc còn mở`.
 

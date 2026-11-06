@@ -230,18 +230,16 @@ export function resolveResume(options, { worker, mode, supportsResume }) {
 /**
  * Refuse a flag the surface about to run cannot honour.
  *
- * The generalisation of resolveResume, written after finding three more flags
- * with the identical defect it was built for. All of them parsed cleanly, all
- * were read on exactly one branch, and all were dropped in silence on the other:
+ * The generalisation of resolveResume, written after finding more flags with
+ * the identical defect it was built for. They parsed cleanly, were read on
+ * exactly one branch, and were dropped in silence on the other:
  *
  *   --title      read only by anti's app branch
  *   --agy-mode   read only by anti's headless branch
- *   --idle       read only by codexRun, never by codexRunApp
  *
- * `--idle` is the one that mattered. It reads as a watchdog -- kill the job if
- * it goes quiet -- so a dispatcher passing it on an app job believed a hung
- * worker would be stopped. Nothing was watching. A flag that silently does
- * nothing is worse than a missing feature, because it is relied upon.
+ * (`--idle` on the old Codex app transport was the third, gone with it.) A flag
+ * that silently does nothing is worse than a missing feature, because it is
+ * relied upon.
  */
 export function assertSurfaceFlags(options, { worker, mode, unsupported }) {
   for (const [key, cliName] of Object.entries(unsupported)) {
@@ -255,6 +253,31 @@ export function assertSurfaceFlags(options, { worker, mode, unsupported }) {
 }
 
 /** Accepts Go-style durations because that is what agy's --print-timeout takes. */
+/**
+ * Chuỗi lát (`crew run --chain`): trần 30m vẫn áp cho TỪNG lát; budget là tổng
+ * thời gian các lát của một chuỗi, ghi sổ nên chạy lại không mở đồng hồ mới.
+ * Ngưỡng ở references/cost-gate.md.
+ */
+export const DEFAULT_CHAIN_BUDGET = "4h";
+export const MAX_CHAIN_BUDGET_MS = 8 * 3_600_000;
+export const DEFAULT_CHAIN_SLICES = 8;
+export const MAX_CHAIN_SLICES = 8;
+/** Owner chốt: cứ 2 lát thì chuỗi nghỉ (exit 4) cho Claude đọc handoff. */
+export const CHAIN_CHECKPOINT_EVERY = 2;
+
+/** Budget chuỗi: cùng cú pháp `--timeout` nhưng trần 8h thay vì 30m. */
+export function parseChainBudget(value) {
+  const text = String(value ?? "").trim();
+  if (!/^(?:\d+(?:\.\d+)?[hms])+$/.test(text)) {
+    throw new GuardError(`không đọc được --budget "${value}"`, 'dùng dạng "45m", "4h", "2h30m"');
+  }
+  const unit = { h: 3_600_000, m: 60_000, s: 1000 };
+  const ms = [...text.matchAll(/(\d+(?:\.\d+)?)(h|m|s)/g)].reduce((sum, [, n, u]) => sum + Number(n) * unit[u], 0);
+  if (ms <= 0) throw new GuardError(`--budget "${value}" phải dương`);
+  if (ms > MAX_CHAIN_BUDGET_MS) throw new GuardError(`--budget "${value}" vượt trần 8h của một chuỗi`, "chẻ việc ra, hoặc chạy chuỗi mới sau khi Claude đọc handoff");
+  return ms;
+}
+
 export function parseDuration(value) {
   const text = String(value).trim();
   // Anchored on purpose. The unanchored version accepted trailing junk by
@@ -355,25 +378,52 @@ const WORKER_STATUS = {
   DONE_WITH_CONCERNS: "done_with_concerns",
   BLOCKED: "blocked",
   NEEDS_CONTEXT: "needs_context",
+  // Chưa xong, nhưng dừng có trật tự: evidence có `## Handoff` để job sau làm
+  // tiếp trên cùng thread. Không phải thất bại, cũng không phải đạt.
+  CONTINUE: "continue",
 };
 
 export function readWorkerStatus(evidenceAbs) {
   const lines = readFileSync(evidenceAbs, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const verdict = lines[i].match(/^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/)?.[1];
+    const verdict = lines[i].match(/^Status:\s*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT|CONTINUE)\b/)?.[1];
     if (!verdict) continue;
     // The brief hands the worker the literal line
     // `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, so a worker
     // that echoes its own brief -- or pastes the template while reporting that
     // it achieved nothing -- would otherwise be read as DONE. A real verdict
     // names exactly one outcome.
-    const tokens = lines[i].match(/\b(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)\b/g) ?? [];
+    const tokens = lines[i].match(/\b(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT|CONTINUE)\b/g) ?? [];
     if (new Set(tokens).size > 1) continue;
     return { status: WORKER_STATUS[verdict], reported: verdict };
   }
   // No Status line means the worker ignored the contract, so we cannot say the
   // job succeeded -- but the evidence may still be usable. Flag, do not judge.
   return { status: "done_unverified", reported: null };
+}
+
+/**
+ * `usage` của một dòng stream Codex `{"type":"turn.completed","usage":{...}}`, hoặc
+ * `prev` khi dòng không phải sự kiện đó. Lượt bị giết giữa chừng không có
+ * `turn.completed`, nên job hết giờ chỉ có số khi lượt cứu handoff chạy xong.
+ * Đo 06/11: con số tăng dần qua các lát cùng thread (602k → 1,40M → 2,44M input),
+ * nên đọc nó như tổng dồn của thread; phần của một lát = lát này trừ lát trước.
+ */
+export function codexTurnUsage(line, prev = null) {
+  if (!line || !line.includes("turn.completed")) return prev;
+  let d;
+  try { d = JSON.parse(line); } catch { return prev; }
+  if (d?.type !== "turn.completed" || !d.usage || typeof d.usage !== "object") return prev;
+  return d.usage;
+}
+
+/** Evidence đã tự phán (có dòng Status) thì không cần lượt cứu handoff. */
+export function evidenceHasStatus(evidenceAbs) {
+  try {
+    return existsSync(evidenceAbs) && statSync(evidenceAbs).size > 0 && readWorkerStatus(evidenceAbs).reported != null;
+  } catch {
+    return false;
+  }
 }
 
 export function readPrompt({ prompt, promptFile }) {
@@ -438,6 +488,49 @@ export const REPORT_LINE = "Owner bảo \"báo Claude\" hoặc \"xong\" → dừ
   + " không cần tìm cách nào khác. Đã ghi Status thì không làm tiếp, không sửa evidence nữa.";
 export const STATUS_LINE = "Dòng cuối evidence file phải là: Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT";
 /**
+ * Bốn mục con của handoff. Cố định để collect kiểm được và để job sau (hay
+ * chuỗi lát) đọc đúng chỗ mà không phải hiểu văn của worker.
+ */
+export const HANDOFF_SECTIONS = "`## Handoff` gồm `### Đã xong`, `### Đang dở`, `### Bước kế tiếp`, `### File đã đụng`";
+
+/** Job ngắn hơn ngưỡng này không có hạn mềm: không đủ chỗ để vừa làm vừa dừng có trật tự. */
+export const SOFT_DEADLINE_MIN_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Hạn mềm: còn `max(5 phút, 15% timeout)` trước hard timeout. Null khi job
+ * ngắn hơn 10 phút. Worker tự dừng ở đây thì không cần lượt cứu.
+ */
+export function softDeadlineAt(startMs, timeoutMs) {
+  if (!(timeoutMs >= SOFT_DEADLINE_MIN_TIMEOUT_MS)) return null;
+  return new Date(startMs + timeoutMs - Math.max(5 * 60_000, 0.15 * timeoutMs));
+}
+
+/** HH:MM theo giờ máy — worker xem giờ bằng `date` trên cùng máy. */
+const clock = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+export function handoffLine(softDeadline) {
+  return `Hạn mềm ${clock(softDeadline)} (giờ máy, xem bằng \`date\`). Kiểm giờ sau mỗi bước lớn; còn dưới 5 phút thì không mở bước lớn mới.`
+    + ` Tới hạn mềm mà chưa xong: dừng, ghi ${HANDOFF_SECTIONS}, rồi dòng cuối \`Status: CONTINUE\`.`
+    + " CONTINUE chỉ dùng khi việc chưa xong và có handoff; xong mà còn lo ngại thì vẫn là DONE_WITH_CONCERNS.";
+}
+
+/**
+ * Lượt cứu khi hết hard timeout mà evidence chưa có Status. Tự đủ nghĩa: job
+ * dưới 10 phút chưa từng nhận dòng hạn mềm, nên không được dựa vào nó.
+ */
+export function handoffRescuePrompt(evidenceRel) {
+  // Đo 06/11 trên job Codex thật: không có câu nguồn, worker ghi tin này vào
+  // `## Thay đổi từ owner`, và collect gắn BRIEF ĐỔI cho một việc owner không hề nói.
+  return "Tin từ crew (không phải owner): hết giờ. Không làm tiếp, không chạy lệnh nào khác."
+    + ` Ghi ngay vào ${evidenceRel} (giữ nguyên phần đã có) mục ${HANDOFF_SECTIONS},`
+    + " rồi dòng cuối `Status: CONTINUE`. Không ghi tin này vào mục `## Thay đổi từ owner`.";
+}
+
+/** Lượt cứu: trần cứng và trần im lặng. Không cấp thêm quyền nào so với job gốc. */
+export const HANDOFF_RESCUE_MS = 3 * 60_000;
+export const HANDOFF_RESCUE_IDLE_MS = 60_000;
+
+/**
  * Phiên chat thay dòng Status: adapter app thoát ngay khi evidence có `Status:`,
  * nên worker chỉ được viết nó khi owner bảo. Bốn mục cố định để Claude tóm tắt
  * phiên mà không phải đọc cả conversation.
@@ -489,7 +582,7 @@ export function costGateLine(workspace) {
   return `Cổng chi phí: KHÔNG tự gọi ${names}. Cần tới thì dừng trước khi gọi, ghi \`Concerns/Blockers: COST_GATE — {tên API}\` và \`Status: BLOCKED\`.`;
 }
 
-export function appendWorkerContract(text, { evidenceAbs, workspace, unsandboxed = false, chat = false, mayModify = [] }) {
+export function appendWorkerContract(text, { evidenceAbs, workspace, unsandboxed = false, chat = false, mayModify = [], softDeadline = null }) {
   const evidenceRel = evidenceAbs.startsWith(workspace + sep)
     ? evidenceAbs.slice(workspace.length + 1)
     : evidenceAbs;
@@ -512,6 +605,8 @@ export function appendWorkerContract(text, { evidenceAbs, workspace, unsandboxed
     OUTSIDE_BRIEF_LINE,
     // CHAT_LINE đã tự dặn "không có gì thì ghi Không có" cho cả 4 mục.
     ...(chat ? [] : [EMPTY_SECTION_LINE]),
+    // Phiên chat chờ owner, không chạy theo đồng hồ của job.
+    ...(softDeadline && !chat ? [handoffLine(softDeadline)] : []),
   ];
   const costLine = costGateLine(workspace);
   if (costLine) lines.push(costLine);

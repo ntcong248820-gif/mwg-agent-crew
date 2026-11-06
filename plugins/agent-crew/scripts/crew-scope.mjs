@@ -114,7 +114,7 @@ const BASE_PROTECTED_DIRS = Object.freeze([".agents/skills/", ".codex/skills/", 
  * the owner said in a worker's chat. The owner edits them by hand. A workspace
  * adds its own through `controlPlanePaths`. Entries ending in "/" are directories.
  */
-const BASE_CONTROL_PLANE = Object.freeze([
+export const BASE_CONTROL_PLANE = Object.freeze([
   ".claude/settings.json", ".claude/settings.local.json", ".claude/agents/", ".claude/agent-memory/",
   ".agents/hooks.json", ".agents/hooks/", ".codex/hooks.json",
   ".githooks/", ".git/", "crew.config.json",

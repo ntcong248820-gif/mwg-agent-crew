@@ -25,6 +25,9 @@ Verdict cần đọc kỹ:
 | `FAIL` | adapter ghi `failed`, hoặc evidence rỗng/thiếu | đọc `failure`; permission thì sửa brief, lý do khác retry tối đa 1 lần. Retry `PASS` thì `--replaced` (dưới bảng) |
 | `BLOCKED` | evidence phán `BLOCKED` | có dòng `COST_GATE` thì xử bằng `crew hold`; không thì đọc evidence, xử nguyên nhân, chạy job mới làm lại rồi `--replaced` như job `FAIL` |
 | `NEEDS_HUMAN` | evidence phán `NEEDS_CONTEXT` | đọc evidence, bổ sung thứ worker thiếu vào brief rồi chạy lại |
+| `CONTINUE` | evidence phán `CONTINUE`: chưa xong, worker dừng ở hạn mềm hoặc qua lượt cứu handoff | **chặn**. Đọc `## Handoff`, rồi `crew add-job` job mới cùng worker và `crew run <worker> --resume <conversationId của job đó>` (brief: "tiếp việc job N, handoff ở <evidence>"). Không phải `FAIL`: đừng `--replaced` |
+| `CONTINUE + HANDOFF THIẾU` | phán `CONTINUE` mà evidence không có mục `## Handoff` | như trên, nhưng brief job làm tiếp phải tự nói việc còn lại — worker đã không ghi |
+| `CHAINED` | job `CONTINUE` mà một job sau trong run đã resume đúng thread (`resumedFrom` = `conversationId` của nó, không `resumeMismatch`) | không chặn; job làm tiếp tự chịu verdict của nó. Chỉ có `resumedFrom` sau khi job đó chạy, nên lúc nó còn `pending` thì dòng cũ vẫn `CONTINUE` |
 | `CANCELLED` | job đã bị bỏ (`--abandon`) | không chặn; report đếm riêng |
 
 Ngoài verdict của từng job, gate còn có hai phát hiện **cấp run**, cả hai ra exit 2: `KHO
@@ -103,7 +106,7 @@ Job ghi hợp lệ ra ngoài thư mục của run — ví dụ bài viết nằm
 khai lúc `crew add-job`, không thì gate đánh là vi phạm:
 
 ```bash
-crew add-job "$MP" --worker anti --role owner --model {model} --title "tối ưu HTML" \
+crew add-job "$MP" --worker anti --role owner --tier standard --title "tối ưu HTML" \
   --allow "content/{slug}/"
 ```
 
@@ -200,7 +203,8 @@ lại chính cổng này: câu "cổng không bao giờ in evidence" trước đ
 ## Exit 3 của adapter
 
 Exit `3` tồn tại vì trước đó một job `BLOCKED` hoặc một job runtime-báo-fail vẫn ping về
-như thành công sạch.
+như thành công sạch. Job `continue` cũng ra exit 3: không hỏng, nhưng chưa xong — phải có
+người bắn job làm tiếp.
 
 ## Đọc evidence khi viết report
 

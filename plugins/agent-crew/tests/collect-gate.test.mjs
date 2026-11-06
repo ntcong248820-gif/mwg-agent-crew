@@ -19,7 +19,7 @@ import { collectRun, abandonJob, writeRunReport, hasSection } from "../scripts/c
 import { evidenceDigest } from "../scripts/crew-guards.mjs";
 import { replacedFingerprint } from "../scripts/lib/replaced-jobs.mjs";
 import { ledgerFingerprint } from "../scripts/lib/reader-ledgers.mjs";
-import { MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
+import { MODULE_ROOT, makeChecker, seedLegacyJob, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const CLI = join(MODULE_ROOT, "scripts", "crew-collect.mjs");
 
@@ -45,7 +45,10 @@ function newRun({ jobs, at = Date.now() }) {
   const { manifestPath } = createRun({ runDir, runId: "test", task: TASK, workspace: ws, depth: 0 });
   const created = new Date(at).toISOString();
   for (const job of jobs) {
-    const added = addJob(manifestPath, {
+    // A legacy job is one `addJob` no longer creates (Codex on app) but runs
+    // already on disk still hold; the gate has to keep judging those.
+    const add = job.legacy ? seedLegacyJob : addJob;
+    const added = add(manifestPath, {
       worker: job.worker ?? "codex",
       // These cases predate the transport rule and none of them turn on it, so
       // they take the shape the historical runs actually had: assist, headless.
@@ -755,9 +758,15 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   refuses("a bogus transport is refused",
     { worker: "codex", role: "owner", transport: "carrier-pigeon" }, 'must be "app" or "headless"');
   refuses("an override with no reason is refused",
-    { worker: "codex", role: "owner", transport: "app" }, "with no reason");
+    { worker: "antigravity", role: "owner", transport: "app" }, "with no reason");
   refuses("...and the refusal names the three cases app is worth its cost in",
-    { worker: "codex", role: "owner", transport: "app" }, "permission prompt a person must answer");
+    { worker: "antigravity", role: "owner", transport: "app" }, "permission prompt a person must answer");
+  // Codex app is gone for new jobs, reason or not: nothing it offered survives
+  // next to headless `--resume`, and the refusal has to say where to go instead.
+  refuses("a codex app job is refused even with a reason",
+    { worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau" }, "Codex chỉ chạy headless");
+  refuses("...and the refusal points at headless --resume",
+    { worker: "codex", role: "assist", transport: "app", note: "x" }, "--resume <conversationId>");
   refuses("an assist job asking for app without a reason is refused too",
     { worker: "antigravity", role: "assist", transport: "app" }, "with no reason");
   refuses("a transport on a claude job is refused",
@@ -792,10 +801,13 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
 {
   // Ten app-mode jobs exist in history, every one of them from before the
   // provenance check shipped -- so the gate had never actually judged one. An
-  // app job has no exit code; the thread id is what vouches for it.
+  // app job has no exit code; the thread id is what vouches for it. The Codex
+  // one is seeded as a legacy record: new Codex jobs cannot be app any more,
+  // but a run from before that still has to collect the way it did.
   const { ws, manifestPath } = newRun({
     jobs: [
       {
+        legacy: true,
         worker: "codex", role: "owner", transport: "app", note: "cần resume thread buổi sau",
         evidence: join(RUN_REL, "app1.md"), body: DONE, status: "done",
         patch: { conversationId: "01a037ab-924f-7fe1-b76a-9bfd7e329ded", exitCode: null, transportMode: "app" },
@@ -816,6 +828,7 @@ const DONE = "work\n\nStatus: DONE\nSummary: ok\n";
   // The same job with nothing from the runtime is the case the WARN is for.
   const bare = newRun({
     jobs: [{
+      legacy: true,
       worker: "codex", role: "owner", transport: "app", note: "việc khám phá, chưa viết nổi acceptance",
       evidence: join(RUN_REL, "bare.md"), body: DONE, status: "done",
     }],

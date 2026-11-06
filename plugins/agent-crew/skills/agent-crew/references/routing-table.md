@@ -34,7 +34,8 @@ tính của loại việc. Cùng một việc có thể là owner hay assist tu�
 ## Transport
 
 **`headless` là mặc định cho cả `owner` và `assist`.** Chọn `app` là ghi đè, và ghi đè
-phải kèm `--note` nói vì sao — không note thì `crew add-job` từ chối.
+phải kèm `--note` nói vì sao — không note thì `crew add-job` từ chối. **Codex chỉ chạy
+`headless`** (từ 2.0.4): `--worker codex --transport app` bị từ chối dù có note.
 
 | Vai trò | Nghĩa là | Transport mặc định |
 | --- | --- | --- |
@@ -61,20 +62,16 @@ khác nhau — rule 25/08 trước đó nối chúng lại là nối sai, và ph
 Nói gọn: `app` **quan sát yếu hơn** `headless` ở cả hai runtime. Nên nó phải là ngoại lệ
 có lý do, không phải mặc định.
 
-### Ba ca `app` đáng giá (user chốt 25/08)
+### Ba ca `app` đáng giá (user chốt 25/08, chỉ còn cho Anti)
 
 1. **Job Anti sẽ gặp prompt permission cần người trả.** Anti app cho người bấm đồng ý;
    headless gặp prompt là silent-fail. Đây là ca app mạnh nhất còn lại.
 2. **Việc mở/khám phá, chưa viết nổi acceptance trước.** Không có tiêu chí chấm thì mất
    evidence-first cũng không mất gì; đổi lại owner nhìn được quá trình.
-3. **Cần thread resume làm tiếp buổi sau.** `codex resume <id>` cho Codex, `crew run anti
-   --resume <conversationId>`. Từ 23/09 **cả 4 bề mặt đều resume được**, chung một
-   cờ `--resume <id>`.
-
-   Nhưng "làm tiếp buổi sau" **vẫn là lý do chọn Anti app** — vì lý do khác lúc
-   đầu tưởng. Codex app chỉ resume được **trong cùng một phiên Claude**: companion
-   giữ job theo `CODEX_COMPANION_SESSION_ID` và xoá chúng khi phiên đóng. Anti app
-   không dính vì `agentapi` giữ conversation ở store riêng của app.
+3. **Cần thread resume làm tiếp buổi sau.** `crew run anti --resume <conversationId>`:
+   `agentapi` giữ conversation ở store riêng của app nên sống qua phiên Claude.
+   Codex không cần app cho ca này: `crew run codex --resume <conversationId>` chạy
+   headless, tiếp được cả thread app cũ (đo 23/09).
 
 Ngoài 3 ca này, chọn `app` là đang trả giá quan sát để lấy một thứ chưa nêu được.
 
@@ -85,7 +82,7 @@ Ngoài 3 ca này, chọn `app` là đang trả giá quan sát để lấy một 
 | Đọc/ghi file, Sheet, script, code | **headless**, mặc định | Quyền hẹp nhất đủ dùng, đã nghiệm thu |
 | Google Workspace | **headless + `--workspace-cli on`** | Owner chốt 22/09: luôn đi Workspace CLI. **Không có lối tắt qua app** — app cũng bị sandbox nên `gws` không ghi nổi `token_cache.json` |
 | Cần trình duyệt / Computer Use / ghi ngoài repo | **headless + `--sandbox-mode danger-full-access`** | Bậc sandbox là thứ duy nhất chặn; app mode không thay thế được |
-| Việc cần ngữ cảnh một thread app đang sống | `--mode app` | Xem "Ba ca `app` đáng giá" |
+| Việc cần ngữ cảnh một thread đang có | `--resume <conversationId>` (Codex: headless; Anti: cùng transport của job trước) | Xem "Ba ca `app` đáng giá" |
 
 ### Luật transport chi tiết nằm ở đâu
 
@@ -93,7 +90,7 @@ Bảng này chỉ đủ để chọn đường. Luật chi tiết nằm ở các
 
 | Cần biết | File |
 | --- | --- |
-| Job `app`, resume Anti/Codex, giãn lệnh dispatch, heartbeat, báo im lặng của Anti app | `transport-va-resume.md` |
+| Job Anti `app`, resume Anti/Codex, giãn lệnh dispatch, heartbeat, báo im lặng của Anti app | `transport-va-resume.md` |
 | `--workspace-cli on`, `--sandbox-mode`, connector Google, `401`, cổng kho credential | `quyen-han-worker.md` |
 | Bảng verdict, cửa sổ phạm vi, retry, reconcile orphan, hold | `nghiem-thu-chi-tiet.md` |
 | Owner gõ `@anti`/`@codex`, resume theo manifest, phiên chat với worker, review 2 vòng | `phoi-hop-owner.md` |
@@ -124,23 +121,34 @@ khớp entry nào, rồi khớp prefix cho phép của task, và rơi vào `inSc
 ## Model
 
 Chọn bậc theo **lượng phán đoán cần để đi từ input sang output**, không theo cảm
-giác việc nặng hay nhẹ.
+giác việc nặng hay nhẹ. Ghi bằng `crew add-job --tier <bậc>`; crew đổi ra tên còn sống.
 
-| Loại việc | Anti headless (`agy`) | Anti app (`agentapi`) | Codex (cả 2 transport) |
-| --- | --- | --- | --- |
-| Điền theo mẫu, chuẩn hoá bảng, readback/export | bậc flash, mức `low` | `flash_lite` | — |
-| Thi hành skill nhiều case, crawl + phân loại theo whitelist | bậc flash, mức `medium` | `flash` | `--effort low` |
-| Suy luận từ dữ liệu sang output chưa có mẫu sẵn | bậc cao nhất `agy models` liệt kê | `pro` | `--effort medium` |
-| Code/pipeline nhiều bước, refactor tool | — | — | `--effort high` |
+| Loại việc | `--tier` | Anti headless (`agy`) | Anti app (`agentapi`) | Codex (headless) |
+| --- | --- | --- | --- | --- |
+| Điền theo mẫu, chuẩn hoá bảng, readback/export | `light` | flash-lite, không có thì flash-low | `flash_lite` | `--effort low` |
+| Thi hành skill nhiều case, crawl + phân loại theo whitelist | `standard` | flash-medium | `flash` | `--effort low` |
+| Suy luận từ dữ liệu sang output chưa có mẫu sẵn | `deep` | pro-high, pro, không có Pro thì flash-high | `pro` | `--effort medium` |
+| Code/pipeline nhiều bước, refactor tool | `code` | — | — | `--effort high` |
+| Phán đoán sâu muốn giao đi để đỡ token Claude; viết/tổng hợp cần giọng tốt | `claude` | claude-sonnet bản mới nhất | — | — |
+| Như trên, việc khó nhất (suy luận nhiều bước, review thiết kế) | `claude-max` | claude-opus bản mới nhất | — | — |
 
-Bảng này **cố ý không ghi tên model**. Tên đổi theo đợt phát hành của nhà cung cấp, và
-một tên cũ nằm trong tài liệu là job chết ngay lượt đầu (đo 16/10: `gemini-3.7-flash-medium`
-và `gpt-5.5` cùng hỏng ở hai job đầu của một run). Trước khi dispatch, chạy `crew doctor`:
-nó in tên `agy models` còn liệt kê và model trong `~/.codex/config.toml`.
+Bảng này **cố ý không ghi tên model đầy đủ**. Tên đổi theo đợt phát hành của nhà cung cấp,
+và một tên cũ nằm trong tài liệu là job chết ngay lượt đầu (đo 16/10: `gemini-3.7-flash-medium`
+và `gpt-5.5` cùng hỏng ở hai job đầu của một run). `--tier` chọn tên từ chính `agy models`
+lúc ghi sổ (regex neo, lấy bản cao nhất); `crew doctor` in mỗi bậc đang ra tên nào. Bậc
+không khớp tên còn sống thì `add-job` báo lỗi kèm danh sách, **không** trượt sang bậc khác.
+Nhà cung cấp đổi lược đặt tên thì repo ghi đè bằng `modelTiers` trong `crew.config.json`
+(`{"deep": {"agy": ["^gemini-[\\d.]+-pro$"]}}`; khoá `agy`/`app`/`effort`), không cần sửa code.
 
-Bậc chỉ là điểm khởi đầu. Job fail vì model yếu thì **nâng đúng 1 bậc và ghi note**,
-không nhảy thẳng lên `pro-high` cho mọi thứ — làm vậy thì lần sau không ai biết việc
-nào thật sự cần bậc cao.
+Bậc `claude`/`claude-max` chạy model Claude **bằng quota Antigravity**, không tốn token
+Claude của owner (đo 06/11: chạy headless như Gemini, JSON cùng hình dạng). Chỉ Anti
+headless. Credit Antigravity mỗi lượt chưa đo được từ CLI.
+
+Bậc chỉ là điểm khởi đầu. Job fail vì model yếu thì **nâng đúng 1 bậc**:
+`crew add-job --bump-from <seq>` (`light→standard→deep`, tự ghi note), không nhảy thẳng
+lên bậc cao nhất cho mọi thứ — làm vậy thì lần sau không ai biết việc nào thật sự cần
+bậc cao. `deep` không tự nâng lên `claude`: đổi nhà cung cấp là quyết định có chủ ý,
+ghi bằng `--tier` tay.
 
 Ràng buộc từng runtime:
 
@@ -148,9 +156,9 @@ Ràng buộc từng runtime:
 | --- | --- |
 | `agy` | nhận tên model đầy đủ; `agy models` liệt kê bản còn sống |
 | `agentapi` | **chỉ** nhận `flash_lite\|flash\|pro\|inherit`, không nhận tên đầy đủ |
-| Codex | Bậc đặt bằng `--effort`; vẫn truyền `-m` (lấy tên từ `crew doctor`) — để trống thì manifest không ghi được model nào đã chạy, đúng cái field này sinh ra để đo. Cache model của Codex liệt kê cả model tài khoản không được dùng, nên tin model trong config máy hơn cache. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
+| Codex | Bậc đặt bằng `--effort`; `--tier` ghi `model` là model trong `~/.codex/config.toml` và `crew run` truyền `-m` từ sổ — để trống thì manifest không ghi được model nào đã chạy, đúng cái field này sinh ra để đo. Cache model của Codex liệt kê cả model tài khoản không được dùng, nên tin model trong config máy hơn cache. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
 
-**Không truyền `--model` thì không dispatch.** Trước phase 03, mọi job trong mọi
+**Không có `--tier` hay `--model` thì không dispatch.** Trước phase 03, mọi job trong mọi
 manifest đều `"model": null` — knob có mà chưa ai bật, nên không có cách nào đo model
 nào hay fail ngoài đoán. `crew add-job` ghi `model` (và `effort` cho Codex) để lần sau đo
 được, và `crew run` lấy lại đúng giá trị đó từ sổ.

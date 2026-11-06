@@ -208,6 +208,14 @@ export const MAX_DEPTH = 1;
  */
 export const MAX_JOBS = 6;
 export const MAX_PARALLEL = 3;
+/**
+ * Lát của một chuỗi (`chainOf`) không tính vào MAX_JOBS — chúng là một job chẻ
+ * theo thời gian, không phải việc mới — nhưng có trần riêng để run vẫn đọc được
+ * bằng mắt. `crew-session.runFor` đếm theo cùng luật.
+ */
+export const MAX_CHAIN_JOBS_PER_RUN = 16;
+/** Số job tính vào MAX_JOBS: mọi job trừ lát chuỗi. */
+export const countedJobs = (jobs) => (jobs ?? []).filter((j) => j.chainOf == null).length;
 
 /**
  * How long a `running` job keeps holding its parallel slot.
@@ -352,6 +360,15 @@ export const TRANSPORTS = new Set(["app", "headless"]);
 const DEFAULT_TRANSPORT = { owner: "headless", assist: "headless" };
 
 /**
+ * Shared with codex-run.mjs so the refusal reads the same whichever door the
+ * request came through: `crew add-job` or the adapter run by hand.
+ */
+export const CODEX_HEADLESS_ONLY =
+  "Codex chỉ chạy headless; transport app đã bỏ cho Codex\n" +
+  "  → cần thread làm tiếp thì chạy headless với `--resume <conversationId>` (crew run codex --resume <id>)\n" +
+  "  → app chỉ còn cho Antigravity";
+
+/**
  * The previous rule -- "app when the user wants to watch" -- was not a rule: it
  * could not be checked, so 34 historical jobs split 10/24 between the two
  * transports with no way to ask why any single one went where it went.
@@ -390,13 +407,23 @@ function resolveRouting(job) {
       `transport must be "app" or "headless", got ${JSON.stringify(transport)}`,
     );
   }
+  // Codex in the app cannot be talked to again, cannot be watched live, and
+  // runs with no idle watchdog, so it bought nothing the headless transport
+  // does not already give. The one case it used to cover -- a thread to pick up
+  // in a later session -- headless covers better through `--resume`, which also
+  // continues threads the app started (measured 23/09). Refused here, at the
+  // only door new jobs come through, so runs already on disk stay readable.
+  if (job.worker === "codex" && transport === "app") {
+    throw new ManifestError(CODEX_HEADLESS_ONLY);
+  }
   if (transport !== fallback && !job.note) {
     throw new ManifestError(
       `job overrides the ${job.role} default transport (${fallback} → ${transport}) with no reason\n` +
       `  → pass note: "<why>"; an override without one is transport picked by feel again\n` +
-      `  → app is worth its cost in three cases: an Antigravity job that will hit a\n` +
-      `    permission prompt a person must answer, exploratory work with no acceptance\n` +
-      `    writable in advance, or a thread that must be resumable in a later session`,
+      `  → app is worth its cost only for Antigravity, in three cases: a job that will\n` +
+      `    hit a permission prompt a person must answer, exploratory work with no\n` +
+      `    acceptance writable in advance, or a thread that must be resumable in a\n` +
+      `    later session`,
     );
   }
   return { role: job.role, transport };
@@ -417,6 +444,8 @@ function resolveRouting(job) {
 const SEALED_JOB_FIELDS = new Set([
   "seq", "worker", "role", "transport", "evidence", "status", "filesMayModify",
   "holdsFingerprint", "holdsTamper", ...Object.values(READER_LEDGERS),
+  "tier", "chainOf", "slice", "chainStartedAt", "chainSlices", "chainElapsedMs",
+  "chainCheckpointAt", "chainCheckpointSlice", "chainStoppedFor",
 ]);
 
 /**
@@ -495,9 +524,18 @@ function assertFilesMayModify(list, workspace, layout = null) {
 export function addJob(manifestPath, job) {
   let added;
   updateManifest(manifestPath, (m) => {
-    if (m.jobs.length >= MAX_JOBS) {
+    const isSlice = job.chainOf != null;
+    if (isSlice) {
+      const root = m.jobs.find((j) => j.seq === job.chainOf);
+      if (!root || root.chainOf != null) throw new ManifestError(`chainOf ${job.chainOf}: không có job gốc đó trong run (lát chỉ nối vào job gốc)`);
+      if (!Number.isInteger(job.slice) || job.slice < 2) throw new ManifestError(`lát chuỗi cần slice là số nguyên ≥ 2, nhận ${JSON.stringify(job.slice)}`);
+      const slices = m.jobs.filter((j) => j.chainOf != null).length;
+      if (slices >= MAX_CHAIN_JOBS_PER_RUN) {
+        throw new ManifestError(`run đã có ${slices} lát chuỗi (tối đa ${MAX_CHAIN_JOBS_PER_RUN})\n  → mở run mới cho phần việc còn lại`);
+      }
+    } else if (countedJobs(m.jobs) >= MAX_JOBS) {
       throw new ManifestError(
-        `run already has ${m.jobs.length} jobs (max ${MAX_JOBS})\n` +
+        `run already has ${countedJobs(m.jobs)} jobs (max ${MAX_JOBS})\n` +
         "  → split the work across runs; a run nobody can hold in their head is a run nobody checks",
       );
     }
@@ -523,6 +561,11 @@ export function addJob(manifestPath, job) {
       // Codex takes its tier as a reasoning effort rather than a model name, so
       // recording only `model` would leave every Codex job looking unset.
       effort: job.effort ?? null,
+      // The one word the dispatcher chose (`--tier`), next to the model or effort
+      // it resolved to. Null when the job was given a model or effort by hand.
+      tier: job.tier ?? null,
+      // Lát k của chuỗi job `chainOf` (lát 1 là chính job gốc, không có field này).
+      ...(isSlice ? { chainOf: job.chainOf, slice: job.slice } : {}),
       title: job.title,
       evidence: job.evidence,
       // Path prefixes this job is allowed to write outside tasks/{task}/. Some

@@ -12,7 +12,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadCrewConfig } from "../lib/crew-config.mjs";
+import { DELEGATE_MODES, loadCrewConfig } from "../lib/crew-config.mjs";
+import { TIERS, TierError, codexConfigModel, parseAgyModels, resolveTier } from "../lib/model-tiers.mjs";
 import { CONFIG_NAME, DEFAULT_LAYOUT, loadLayout } from "../lib/crew-layout.mjs";
 import { CliError, parseFlags, workspaceRoot } from "./run-commands.mjs";
 
@@ -26,19 +27,25 @@ const run = (cmd, args, timeout = 15_000) => {
   return { ok: p.status === 0, out: `${p.stdout ?? ""}`.trim(), err: p.error?.message ?? `${p.stderr ?? ""}`.trim() };
 };
 
-/** Tên model `agy models` còn liệt kê: cột đầu mỗi dòng, bỏ dòng thông báo. */
-export function parseAgyModels(text) {
-  return String(text).split("\n").map((l) => l.split("\t")[0].trim()).filter((s) => /^[a-z0-9][a-z0-9.-]+$/.test(s));
-}
+export { codexConfigModel, parseAgyModels };
 
-/** Model Codex đang đặt trong config máy, hoặc null. */
-export function codexConfigModel(home = homedir()) {
-  try {
-    const m = /^\s*model\s*=\s*"([^"]+)"/m.exec(readFileSync(join(home, ".codex", "config.toml"), "utf8"));
-    return m ? m[1] : null;
-  } catch {
-    return null;
-  }
+/**
+ * Mỗi bậc `--tier` đang ra gì trên máy này: Anti headless (theo `agy models`),
+ * Anti app, Codex. Bậc không khớp thì in lý do, không tính là lỗi của doctor.
+ */
+export function tierTable(names, overrides = {}) {
+  const cell = (args) => {
+    try {
+      const r = resolveTier({ ...args, overrides });
+      return r.effort ? `--effort ${r.effort}` : r.model;
+    } catch (err) {
+      if (!(err instanceof TierError)) throw err;
+      return "—";
+    }
+  };
+  return TIERS.map((tier) => `${tier.padEnd(10)} anti ${cell({ worker: "antigravity", tier, liveAgyModels: names })}` +
+    ` · anti app ${cell({ worker: "antigravity", transport: "app", tier })}` +
+    ` · codex ${cell({ worker: "codex", tier })}`);
 }
 
 /** Slug model trong cache của Codex. Cache liệt kê model của nhà cung cấp, không nói tài khoản này được dùng cái nào. */
@@ -75,13 +82,18 @@ export async function doctor(argv, { cwd }) {
   say("workspace", `${workspace}${inRepo ? "" : " — KHÔNG phải git repo"}`);
   if (!inRepo) problems.push("thư mục này không phải git repo — crew new-run sẽ từ chối (chạy git init)");
 
+  let modelTiers = {};
   try {
-    const { layout, routingTriggers, routingLog, costGate, redactConfig } = loadCrewConfig(workspace);
+    const { layout, routingTriggers, routingLog, costGate, redactConfig, delegate, ...rules } = loadCrewConfig(workspace);
+    modelTiers = rules.modelTiers;
     const custom = existsSync(join(workspace, CONFIG_NAME));
     say("layout", `${custom ? CONFIG_NAME : "mặc định (chưa có crew.config.json)"} — run ở ${layout.runDir}, evidence trong ${layout.evidenceRoot}/`);
     say("routing", routingTriggers.length
       ? `${routingTriggers.length} trigger (${[...new Set(routingTriggers.map((t) => t.kind))].join(", ")})${routingLog ? `, log ${routingLog}` : ""}`
       : "không khai trigger — hook chỉ nói khi owner gõ @anti/@codex");
+    say("delegate", delegate === "aggressive"
+      ? "aggressive — gate gợi ý giao code/research từ 1 đầu việc"
+      : "default — gate chỉ gợi ý khi ≥2 loại đầu việc (bật: crew init --delegate aggressive)");
     say("cost gate", costGate.length ? costGate.map((c) => c.api).join(", ") : "không khai — brief không có dòng cổng chi phí");
     say("redact", !redactConfig
       ? "không khai redactConfig — state phiên/export chỉ che theo hình dạng chung"
@@ -94,12 +106,14 @@ export async function doctor(argv, { cwd }) {
   }
 
   const workers = [];
+  let agyNames = [];
   const agy = run("agy", ["--version"]);
   if (agy.ok) {
     workers.push("anti");
     say("agy", agy.out.split("\n")[0]);
     const models = run("agy", ["models"], 30_000);
     const names = models.ok ? parseAgyModels(models.out) : [];
+    agyNames = names;
     say("", names.length ? `model còn sống: ${names.join(", ")}` : `không đọc được \`agy models\`: ${models.err.split("\n")[0]}`);
   } else {
     say("agy", "không có trên PATH — worker Antigravity không chạy được");
@@ -117,13 +131,11 @@ export async function doctor(argv, { cwd }) {
   }
   if (!workers.length) problems.push("không có worker nào: cài agy hoặc codex");
 
-  // Transport app là ngoại lệ có tên, không phải điều kiện: báo, không tính là lỗi.
-  try {
-    const { resolveCompanion } = await import("../codex-companion-path.mjs");
-    say("codex app", `companion ${resolveCompanion()}`);
-  } catch (err) {
-    say("codex app", `không dùng được transport app: ${String(err.message).split("\n")[0]}`);
-  }
+  // Một chữ `--tier` ra model nào trên máy này. "—" là bậc không dành cho đường đó
+  // (hoặc không khớp model còn sống); add-job sẽ báo lý do đầy đủ.
+  tierTable(agyNames, modelTiers).forEach((row, i) => say(i ? "" : "tier", row));
+
+  // Anti app là ngoại lệ có tên, không phải điều kiện: báo, không tính là lỗi.
   try {
     const { resolveAntiEnv } = await import("../anti-env.mjs");
     const env = resolveAntiEnv(workspace);
@@ -157,8 +169,11 @@ export async function doctor(argv, { cwd }) {
 export function init(argv, { cwd }) {
   let flags;
   try {
-    ({ flags } = parseFlags(argv, ["state"]));
+    ({ flags } = parseFlags(argv, ["state", "delegate"]));
     if (flags.state !== undefined && flags.state !== "on") throw new CliError(`--state chỉ nhận "on", nhận "${flags.state}"`);
+    if (flags.delegate !== undefined && !DELEGATE_MODES.includes(flags.delegate)) {
+      throw new CliError(`--delegate chỉ nhận ${DELEGATE_MODES.join(" | ")}, nhận "${flags.delegate}"`);
+    }
   } catch (err) {
     process.stderr.write(`${err.message}\n`);
     return 2;
@@ -172,6 +187,20 @@ export function init(argv, { cwd }) {
     return 1;
   }
   const created = [];
+  if (flags.delegate !== undefined) {
+    // Ghi đúng một khoá, giữ nguyên mọi khoá khác của config đã có.
+    const path = join(workspace, CONFIG_NAME);
+    let raw = {};
+    try {
+      raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    } catch (err) {
+      process.stderr.write(`${CONFIG_NAME} không đọc được (${err.message}) — sửa tay rồi chạy lại\n`);
+      return 1;
+    }
+    raw.delegate = flags.delegate;
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    created.push(`${CONFIG_NAME} (delegate: ${flags.delegate})`);
+  }
   if (layout.evidenceRoot === DEFAULT_LAYOUT.evidenceRoot) {
     const root = join(workspace, layout.evidenceRoot);
     mkdirSync(root, { recursive: true });
@@ -200,7 +229,7 @@ export function init(argv, { cwd }) {
     "  - công cụ crew KHÔNG được tự gọi (chấm công, đóng task, ghi hệ thống ngoài)",
     "  - skill nào giao Antigravity / Codex / Claude",
     "",
-    `Thứ máy phải đọc (hook, brief) khai ở ${CONFIG_NAME}: routingTriggers, routingLog, costGate, redactConfig.`,
+    `Thứ máy phải đọc (hook, brief) khai ở ${CONFIG_NAME}: routingTriggers, routingLog, costGate, redactConfig, delegate.`,
     "",
   ].join("\n"));
   return 0;

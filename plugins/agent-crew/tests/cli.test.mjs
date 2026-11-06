@@ -10,7 +10,7 @@ import { delimiter, dirname, join } from "node:path";
 import { readManifest } from "../scripts/crew-manifest.mjs";
 import { expandRunArgs } from "../scripts/cli/run-commands.mjs";
 import { parseAgyModels, shimScript, stableNode } from "../scripts/cli/setup.mjs";
-import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace } from "./helpers.mjs";
+import { FIXTURE_BIN, MODULE_ROOT, makeChecker, tmpWorkspace, writeFile } from "./helpers.mjs";
 
 const t = makeChecker("cli");
 const CREW = join(MODULE_ROOT, "bin", "crew.mjs");
@@ -41,6 +41,64 @@ const gitRepo = (prefix) => {
   t.check("...và khác 0", via.code !== 0, true);
 }
 
+// ---- add-job --tier / --bump-from: một chữ ra model còn sống ----
+{
+  // `agy models` lấy từ fake trên PATH: mặc định là list thật đo 06/11.
+  // HOME giả có ~/.codex/config.toml riêng, để model Codex không phụ thuộc máy chạy test.
+  const home = mkdtempSync(join(tmpdir(), "cli-tier-home-"));
+  writeFile(join(home, ".codex", "config.toml"), 'model = "gpt-test-1"\n');
+  const env = (extra = {}) => ({ ...process.env, HOME: home, PATH: `${FIXTURE_BIN}${delimiter}${process.env.PATH}`, ...extra });
+  const ws = gitRepo("cli-tier-");
+  const mp = crew(["new-run", "--run", "261106-0900"], { cwd: ws }).out;
+  const add = (args, extra) => crew(["add-job", mp, "--role", "assist", "--title", "t", ...args], { cwd: ws, env: env(extra) });
+  const job = (seq) => readManifest(mp).jobs.find((j) => j.seq === seq);
+
+  t.check("--tier standard cho anti: exit 0", add(["--worker", "anti", "--tier", "standard"]).code, 0);
+  t.check("...sổ ghi tier và model còn sống", `${job(1).tier}|${job(1).model}`, "standard|gemini-3.8-flash-medium");
+  t.check("--tier claude cho anti → model Claude qua agy", (add(["--worker", "anti", "--tier", "claude"]), job(2).model), "claude-sonnet-4-6");
+  t.check("--tier code cho codex → --effort high, model từ config máy", (add(["--worker", "codex", "--tier", "code"]), `${job(3).tier}|${job(3).effort}|${job(3).model}`), "code|high|gpt-test-1");
+
+  const bumped = add(["--worker", "anti", "--bump-from", "1"]);
+  t.check("--bump-from 1: exit 0", bumped.code, 0);
+  t.check("...nâng đúng 1 bậc", `${job(4).tier}|${job(4).model}`, "deep|gemini-3.8-flash-high");
+  t.check("...note ghi nâng từ job nào", job(4).notes.includes("nâng bậc từ job 1 (standard → deep)"), true);
+  t.check("--bump-from job deep → giữ deep, có note", (add(["--worker", "anti", "--bump-from", "4"]), `${job(5).tier}|${job(5).notes[0]}`), "deep|nâng bậc từ job 4: deep không có bậc trên, giữ nguyên");
+  t.check("--bump-from job không ghi tier → exit 2", (crew(["add-job", mp, "--worker", "anti", "--role", "assist", "--title", "m", "--model", "gemini-3.8-flash-low"], { cwd: ws }), add(["--worker", "anti", "--bump-from", "6"]).code), 2);
+  t.check("--tier và --bump-from cùng lúc → exit 2", add(["--worker", "anti", "--tier", "light", "--bump-from", "1"]).code, 2);
+  t.check("--bump-from job không có → exit 2", add(["--worker", "anti", "--bump-from", "99"]).code, 2);
+
+  const before = readManifest(mp).jobs.length;
+  const codeAnti = add(["--worker", "anti", "--tier", "code"]);
+  t.check("--tier code cho anti → exit khác 0", codeAnti.code !== 0, true);
+  t.check("...nói tier code chỉ cho Codex", codeAnti.err.includes("tier code chỉ cho Codex"), true);
+  t.check("--tier claude cho codex → exit khác 0", add(["--worker", "codex", "--tier", "claude"]).code !== 0, true);
+  t.check("--tier lạ → exit khác 0", add(["--worker", "anti", "--tier", "huge"]).code !== 0, true);
+  const dead = add(["--worker", "anti", "--tier", "light"], { FAKE_AGY_MODELS: "gemini-3.8-flash-high" });
+  t.check("list không có model của bậc → exit khác 0", dead.code !== 0, true);
+  t.check("...liệt kê tên còn sống, không trượt sang bậc khác", dead.err.includes("model còn sống: gemini-3.8-flash-high"), true);
+  const noAgy = add(["--worker", "anti", "--tier", "standard"], { FAKE_AGY_MODELS: "fail" });
+  t.check("agy models chết → exit khác 0, gợi --model tay", noAgy.code !== 0 && noAgy.err.includes("--model <tên>"), true);
+  t.check("...và không job lỗi nào vào sổ", readManifest(mp).jobs.length, before);
+
+  // Run đầu đã đủ MAX_JOBS; phần dưới ghi vào run thứ hai.
+  const mp2 = crew(["new-run", "--run", "261106-0901"], { cwd: ws }).out;
+  const add2 = (args, extra) => crew(["add-job", mp2, "--role", "assist", "--title", "t", ...args], { cwd: ws, env: env(extra) });
+  const last2 = () => readManifest(mp2).jobs.at(-1);
+  // Cờ tay thắng --tier, và khi đó không cần gọi agy models.
+  const manual = add2(["--worker", "anti", "--tier", "light", "--model", "gemini-3.8-flash-high"], { FAKE_AGY_MODELS: "fail" });
+  const mj = last2();
+  t.check("--model tay thắng --tier, không cần agy models", `${manual.code}|${mj.tier}|${mj.model}`, "0|light|gemini-3.8-flash-high");
+  t.check("...note ghi cờ tay đã thắng", mj.notes.includes("--model tay thắng --tier light"), true);
+  t.check("anti app --tier deep → bậc agentapi pro",
+    (add2(["--worker", "anti", "--tier", "deep", "--transport", "app", "--note", "cần người trả prompt permission"]), last2().model), "pro");
+  t.check("thiếu cả --tier lẫn --model → exit 2, gợi --tier", (() => { const r = add2(["--worker", "anti"]); return r.code === 2 && r.err.includes("--tier"); })(), true);
+
+  // Job resume vẫn ghi tier/model vào sổ, nhưng crew run không truyền --model.
+  const resumed = expandRunArgs(["--manifest", mp, "--job", "1", "--resume", "conv-1"], { cwd: ws });
+  t.check("run job có tier + --resume → không thêm --model", resumed.includes("--model"), false);
+  t.check("run job có tier, không resume → --model từ sổ", (() => { const a = expandRunArgs(["--manifest", mp, "--job", "1"], { cwd: ws }); return a[a.indexOf("--model") + 1]; })(), "gemini-3.8-flash-medium");
+}
+
 // ---- new-run / add-job / digest ở layout mặc định ----
 {
   const ws = gitRepo("cli-default-");
@@ -62,6 +120,10 @@ const gitRepo = (prefix) => {
   t.check("--allow lặp → filesMayModify", JSON.stringify(readManifest(mp).jobs[1].filesMayModify), JSON.stringify(["src/", "docs/"]));
   t.check("worker antigravity ghi đúng tên", readManifest(mp).jobs[0].worker, "antigravity");
   t.check("codex thiếu --effort → exit 2", crew(["add-job", mp, "--worker", "codex", "--role", "assist", "--title", "x"], { cwd: ws }).code, 2);
+  const codexApp = crew(["add-job", mp, "--worker", "codex", "--role", "owner", "--transport", "app", "--note", "x", "--effort", "low", "--title", "t"], { cwd: ws });
+  t.check("codex --transport app → exit khác 0", codexApp.code !== 0, true);
+  t.check("...câu lỗi chỉ sang headless --resume", /headless/.test(codexApp.err) && /--resume <conversationId>/.test(codexApp.err), true);
+  t.check("...và không ghi job nào vào sổ", readManifest(mp).jobs.length, 2);
   t.check("worker lạ → exit 2", crew(["add-job", mp, "--worker", "gemini", "--role", "assist", "--title", "x", "--model", "m"], { cwd: ws }).code, 2);
   t.check("evidence ngoài .crew → exit 1 (luật của sổ, không phải của CLI)",
     crew(["add-job", mp, "--worker", "anti", "--role", "assist", "--title", "x", "--model", "m", "--evidence", "src/w.md"], { cwd: ws }).code, 1);

@@ -72,9 +72,9 @@ t.check(
 // --- what actually reaches the child ---------------------------------------
 
 /** Runs the adapter the way the skill dispatches it. */
-function run({ evidence, extra = [], env = {} }) {
+function run({ evidence, extra = [], env = {}, adapter = ADAPTER }) {
   const proc = spawnSync("node", [
-    ADAPTER,
+    adapter,
     "--prompt-file", brief,
     "--evidence", evidence,
     "--workspace", ws,
@@ -135,17 +135,6 @@ function run({ evidence, extra = [], env = {} }) {
   const r = run({ evidence, extra: ["--workspace-cli", "maybe"] });
   t.check("an unknown --workspace-cli value is refused", r.exit !== 0, true);
   t.check("...and says what the allowed values are", /use one of: on, off/.test(r.stderr), true);
-}
-
-{
-  // P6, measured 18/09: the app broker is reused across dispatches, so env
-  // injected at dispatch never reaches the job. Accepting the flag would hand
-  // back a job that looks authorised and 401s anyway.
-  const evidence = join(RUN_DIR_REL, "appmode.md");
-  const r = run({ evidence, extra: ["--mode", "app", "--workspace-cli", "on"] });
-  t.check("app mode refuses the flag outright", r.exit !== 0, true);
-  t.check("...and explains it is the broker, not a typo", /broker is reused/.test(r.stderr), true);
-  t.check("...and points at the transport that does work", /--mode headless/.test(r.stderr), true);
 }
 
 // --- minting, when the credential store cannot answer ----------------------

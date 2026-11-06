@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_NAME, LEGACY_LAYOUT } from "../scripts/lib/crew-layout.mjs";
+import { addJob, readManifest, updateManifest } from "../scripts/crew-manifest.mjs";
 
 export const MODULE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const FIXTURES = join(MODULE_ROOT, "tests", "fixtures");
@@ -23,6 +24,23 @@ export const FIXTURES = join(MODULE_ROOT, "tests", "fixtures");
  * measures nothing.
  */
 export const FIXTURE_BIN = join(FIXTURES, "bin");
+
+/**
+ * Ghi vào sổ một job theo hình dạng `addJob` không còn tạo ra nữa -- hiện chỉ
+ * là job Codex transport app -- như run cũ trên đĩa vẫn có. Job đi qua `addJob`
+ * dưới transport mặc định để mọi field khác vẫn qua kiểm như thật, rồi transport
+ * được đặt lại đúng như sổ cũ ghi. Dùng để kiểm collect/reconcile/dispatch còn
+ * đọc được run cũ, không phải để lách luật khi tạo job mới.
+ */
+export function seedLegacyJob(manifestPath, job) {
+  const { transport, ...rest } = job;
+  const { seq } = addJob(manifestPath, { ...rest, transport: "headless" });
+  updateManifest(manifestPath, (m) => {
+    m.jobs.find((j) => j.seq === seq).transport = transport;
+    return m;
+  });
+  return readManifest(manifestPath).jobs.find((j) => j.seq === seq);
+}
 
 export function makeChecker(title) {
   let pass = 0;
