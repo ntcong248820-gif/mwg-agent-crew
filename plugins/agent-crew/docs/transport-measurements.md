@@ -249,3 +249,32 @@ Hệ quả:
 - Lệnh tay `agy --output-format json --print-timeout 1m -p "..."` **không** có
   `--dangerously-skip-permissions` thì lệnh shell bị auto-deny (`denied_actions`), exit 0,
   `response` rỗng — đúng hình dạng silent-fail đã biết.
+
+### Chuỗi lát `--chain` Codex thật — đo 2026-11-06
+
+Câu hỏi: chuỗi có tự nối lát `CONTINUE` trên cùng thread, dừng ở checkpoint, gọi lại đếm
+tiếp từ sổ, và kết thúc qua cổng `crew collect` không.
+
+Lệnh: `crew run codex --manifest … --job 1 --prompt-file … --chain --timeout 3m --budget 12m`,
+job `--tier light` (effort low, model trong `~/.codex/config.toml`). Brief cố ý dài: ghi
+1..200 vào `counter.txt`, mỗi số một lệnh `sleep 1 && echo N >> …`. Timeout 3m < 10m nên
+không có hạn mềm; handoff đến từ lượt cứu.
+
+| Lát | Job | Thời gian | Lượt cứu | Kết quả | counter sau lát |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1 (gốc) | 202s | 22s, ok | `continue`, exit 3 | ~65 (worker tự khai) |
+| 2 | 2, `resume` lát 1 | 201s | 21s, ok | `continue` → **checkpoint exit 4** (404s) | 136 |
+| 3 | 3, `resume` lát 2 | 177s | — | `DONE`, exit 0 | 200 |
+
+- Cả 3 lát cùng `conversationId`; lát 2–3 `resumedFrom` đúng thread, không `resumeMismatch`.
+- Gọi lại đúng lệnh sau checkpoint: `chainStartedAt` giữ nguyên, elapsed đếm tiếp từ sổ
+  (lát 3 nhận timeout 3m vì còn ~5m16s budget). Tổng 580s / 720s budget.
+- File `counter.txt` khớp đúng `seq 1 200` (không trùng, không thiếu). Lát 2 chỉ tiến được
+  ~71 số / 3m (lát 1 ~65): thread resume đọc lại handoff + file trước khi làm tiếp.
+- Handoff là dữ liệu, và **tự khai tiến độ của worker lệch file thật** (lát 2 khai "66–100,
+  bắt đầu 101–150", file thật tới 136). Checkpoint đọc file thật, không đọc lời khai.
+- `usage` của Codex headless là null ở sổ (adapter chưa ghi usage cho Codex), nên sidecar
+  chưa đo được thread phình theo token. Còn mở.
+- `crew collect`: 1 PASS + 2 `CHAINED`. Lần đầu exit 2 vì `SCOPE_VIOLATION` theo mtime: file
+  code phase 5 phiên Claude tự sửa trong lúc chuỗi chạy. Bác bằng `--not-ours … --reason`
+  → exit 0. Đo chuỗi trong repo đang sửa code thì nên commit trước hoặc chạy ở worktree riêng.
