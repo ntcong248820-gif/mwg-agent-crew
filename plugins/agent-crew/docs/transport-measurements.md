@@ -282,3 +282,20 @@ không có hạn mềm; handoff đến từ lượt cứu.
 - `crew collect`: 1 PASS + 2 `CHAINED`. Lần đầu exit 2 vì `SCOPE_VIOLATION` theo mtime: file
   code phase 5 phiên Claude tự sửa trong lúc chuỗi chạy. Bác bằng `--not-ours … --reason`
   → exit 0. Đo chuỗi trong repo đang sửa code thì nên commit trước hoặc chạy ở worktree riêng.
+
+### Catalog Codex và bậc `--tier` chọn model — đo 2026-11-07
+
+Câu hỏi: bậc Codex chọn model từ catalog thì có rơi vào model tài khoản không được dùng không.
+
+- `~/.codex/models_cache.json` (cùng nội dung `codex debug models`, ~0,9s) có `identity` của
+  tài khoản; mọi model `visibility: list` đều `available_access_programs: {cyber:[standard]}`.
+  Model `hide` (gpt-reserve, gpt-6-chat-thinking, codex-auto-review) bị bỏ khi chọn bậc.
+- `codex exec -m <model> -c model_reasoning_effort=low "Trả lời đúng một chữ: ok"` với
+  `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`: cả ba exit 0, trả `ok`, có `turn.completed`.
+  `gpt-6-astra` là model trong config máy, đã chạy suốt các run trước.
+- Effort hỗ trợ (catalog): Sol/Terra/Astra `low..max` + `ultra`; Luna `low..max`, không `ultra`.
+  Mặc định Codex: Sol/Luna `medium`, Astra/Terra `low`.
+- Bảng bậc 2.2.0: light Luna low · standard Terra medium · deep Sol xhigh · code Sol high ·
+  max Astra max. Định vị dòng model lấy từ mô tả catalog + research Anti có nguồn
+  (`.crew/runs/261107-0030/worker-anti-1.md`); giá và benchmark trong đó là số Anti dẫn từ web,
+  chưa tự kiểm.

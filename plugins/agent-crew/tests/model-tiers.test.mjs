@@ -63,36 +63,57 @@ t.check("anti app standard → flash", anti("standard", [], { transport: "app" }
 t.check("anti app deep → pro", anti("deep", [], { transport: "app" }).model, "pro");
 t.check("anti app claude → lỗi agentapi", err(() => anti("claude", [], { transport: "app" })).includes("agentapi chỉ nhận flash_lite|flash|pro"), true);
 t.check("anti app claude-max → lỗi", err(() => anti("claude-max", [], { transport: "app" })).startsWith("tier claude-max không dùng được ở Anti app"), true);
-const codex = (tier) => resolveTier({ worker: "codex", tier });
-t.check("codex light/standard/deep/code → effort", ["light", "standard", "deep", "code"].map((x) => codex(x).effort).join(","), "low,low,medium,high");
-t.check("...model Codex lấy từ config máy, không có thì null", `${resolveTier({ worker: "codex", tier: "code", codexModel: "gpt-x" }).model}|${codex("code").model}`, "gpt-x|null");
+// Catalog Codex đo 07/11 (`codex debug models`, bỏ model ẩn).
+const ALL = ["low", "medium", "high", "xhigh", "max", "ultra"];
+const CODEX_1107 = [
+  { slug: "gpt-6.1-sol", efforts: ALL }, { slug: "gpt-6.1-terra", efforts: ALL }, { slug: "gpt-6-astra", efforts: ALL },
+  { slug: "gpt-6-sol", efforts: ALL }, { slug: "gpt-6-luna", efforts: ALL.slice(0, 5) },
+  { slug: "gpt-5.6-sol", efforts: ALL }, { slug: "gpt-5.6-terra", efforts: ALL }, { slug: "gpt-5.6-luna", efforts: ALL.slice(0, 5) },
+];
+const codex = (tier, list = CODEX_1107, extra = {}) => resolveTier({ worker: "codex", tier, liveCodexModels: list, ...extra });
+const pair = (tier) => { const r = codex(tier); return `${r.model} ${r.effort}`; };
+t.check("codex light → Luna mới nhất, low", pair("light"), "gpt-6-luna low");
+t.check("codex standard → Terra mới nhất (6.1 thắng 5.6), medium", pair("standard"), "gpt-6.1-terra medium");
+t.check("codex deep → Sol mới nhất (6.1 thắng 6), xhigh", pair("deep"), "gpt-6.1-sol xhigh");
+t.check("codex code → Sol mới nhất, high", pair("code"), "gpt-6.1-sol high");
+t.check("codex max → Astra, max", pair("max"), "gpt-6-astra max");
+t.check("không có dòng của bậc → lỗi liệt kê model còn sống, không rơi sang dòng khác",
+  err(() => codex("max", CODEX_1107.filter((m) => !m.slug.includes("astra")))).includes("model Codex còn liệt kê: gpt-6.1-sol"), true);
+t.check("model không nhận effort của bậc → lỗi", err(() => codex("light", [{ slug: "gpt-6-luna", efforts: ["low"] }], { overrides: { light: { effort: "max" } } })).includes("không nhận effort max"), true);
+t.check("liveCodexModels null chỉ kiểm, không chọn", `${codex("code", null).model}`, "null");
+t.check("anti max → lỗi, chỉ cho Codex", err(() => anti("max")), "tier max chỉ cho Codex");
 t.check("codex claude → lỗi", err(() => codex("claude")).startsWith("tier claude chỉ cho Anti headless"), true);
 t.check("codex claude-max → lỗi", err(() => codex("claude-max")).startsWith("tier claude-max chỉ cho Anti headless"), true);
 t.check("job Claude không nhận --tier", err(() => resolveTier({ worker: "claude", tier: "deep" })).includes("job Claude không nhận --tier"), true);
-t.check("tier lạ → lỗi liệt kê bậc", err(() => anti("huge")).includes("light|standard|deep|code|claude|claude-max"), true);
+t.check("tier lạ → lỗi liệt kê bậc", err(() => anti("huge")).includes("light|standard|deep|code|max|claude|claude-max"), true);
 t.check("liveAgyModels null chỉ kiểm, không chọn", `${anti("standard", null).model}`, "null");
 t.check("...nhưng vẫn chặn bậc sai worker", err(() => anti("code", null)), "tier code chỉ cho Codex");
 
 // --- nâng bậc ---------------------------------------------------------------
 t.check("bumpTier light → standard", bumpTier("light"), "standard");
 t.check("bumpTier standard → deep", bumpTier("standard"), "deep");
-t.check("bumpTier deep đứng yên (không tự sang claude)", bumpTier("deep"), "deep");
-t.check("bumpTier code/claude/claude-max đứng yên", ["code", "claude", "claude-max"].map(bumpTier).join(","), "code,claude,claude-max");
+t.check("bumpTier deep đứng yên với Anti (không tự sang claude)", bumpTier("deep", "antigravity"), "deep");
+t.check("bumpTier code/claude/claude-max đứng yên với Anti", ["code", "claude", "claude-max"].map((x) => bumpTier(x, "antigravity")).join(","), "code,claude,claude-max");
+t.check("Codex: deep → max, code → max (Astra)", `${bumpTier("deep", "codex")},${bumpTier("code", "codex")}`, "max,max");
+t.check("Codex: light → standard → deep như Anti", `${bumpTier("light", "codex")},${bumpTier("standard", "codex")}`, "standard,deep");
+t.check("Codex: max là đỉnh, đứng yên", bumpTier("max", "codex"), "max");
 
 // --- modelTiers ghi đè ------------------------------------------------------
 {
   const fail = (msg) => { throw new Error(msg); };
-  const over = normalizeModelTiers({ standard: { agy: ["^gemini-[\\d.]+-flash-high$"] }, deep: { effort: "high" } }, fail);
+  const over = normalizeModelTiers({ standard: { agy: ["^gemini-[\\d.]+-flash-high$"] }, deep: { effort: "high" }, code: { codex: ["^gpt-[\\d.]+-astra$"] } }, fail);
   t.check("ghi đè regex của một bậc", anti("standard", LIST_1106, { overrides: over }).model, "gemini-3.8-flash-high");
   t.check("...các trường khác giữ mặc định", anti("standard", [], { transport: "app", overrides: over }).model, "flash");
-  t.check("ghi đè effort Codex", resolveTier({ worker: "codex", tier: "deep", overrides: over }).effort, "high");
+  t.check("ghi đè effort Codex", codex("deep", CODEX_1107, { overrides: over }).effort, "high");
+  t.check("ghi đè dòng model Codex", codex("code", CODEX_1107, { overrides: over }).model, "gpt-6-astra");
   const bad = (value) => { try { normalizeModelTiers(value, fail); return "no throw"; } catch (e) { return e.message; } };
   t.check("tier lạ trong modelTiers bị từ chối", bad({ huge: {} }).startsWith('modelTiers: tier lạ "huge"'), true);
   t.check("khoá lạ trong một bậc bị từ chối", bad({ light: { model: "x" } }).includes("khoá lạ model"), true);
   t.check("regex không neo bị từ chối", bad({ light: { agy: ["flash"] } }).includes("neo ^...$"), true);
   t.check("regex hỏng bị từ chối", bad({ light: { agy: ["^(flash$"] } }).includes("không phải regex hợp lệ"), true);
   t.check("bậc app lạ bị từ chối", bad({ light: { app: "ultra" } }).includes("flash_lite|flash|pro|inherit"), true);
-  t.check("effort lạ bị từ chối", bad({ code: { effort: "max" } }).includes("low|medium|high"), true);
+  t.check("effort lạ bị từ chối", bad({ code: { effort: "ultra" } }).includes("low|medium|high|xhigh|max"), true);
+  t.check("regex codex không neo bị từ chối", bad({ code: { codex: ["sol"] } }).includes("modelTiers.code.codex[0] phải là regex neo"), true);
 }
 
 // --- crew.config.json nạp modelTiers ------------------------------------------

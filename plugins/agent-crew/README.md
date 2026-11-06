@@ -32,9 +32,9 @@ crew collect "$MP"
 
 `crew run --manifest --job` lấy `--evidence`, `--workspace`, `--mode`, `--model`,
 `--effort` từ sổ — đúng cái `add-job` đã ghi, nên không lệch được. Cờ truyền tay thắng.
-`add-job --tier light|standard|deep|code|claude|claude-max` đổi bậc ra tên `agy models`
-còn sống (Anti) hoặc `--effort` (Codex); `--bump-from <seq>` nâng đúng 1 bậc từ job trước;
-`--model`/`--effort` tay vẫn thắng. `crew doctor` in mỗi bậc đang ra model nào.
+`add-job --tier light|standard|deep|code|max|claude|claude-max` đổi bậc ra tên `agy models`
+còn sống (Anti) hoặc model + effort trong catalog Codex (Luna low, Terra medium, Sol xhigh/high,
+Astra max); `--bump-from <seq>` nâng đúng 1 bậc từ job trước; `--model`/`--effort` tay vẫn thắng. `crew doctor` in mỗi bậc đang ra model nào.
 
 Việc dài hơn trần 30m của một job: `crew run codex --manifest "$MP" --job N --prompt-file
 <brief> --chain --timeout 30m --budget 4h` — lát nào ra `Status: CONTINUE` (có `## Handoff`)
@@ -110,7 +110,7 @@ thư mục không phải git trước khi bắn job nào.
 | `routingTriggers` | Regex (không phân biệt hoa thường) trên prompt. Khớp ≥2 `kind` khác nhau → hook gợi ý chia việc; 1 `kind` → gợi ý một job. Trigger khớp tên trong `costGate` bị từ chối lúc nạp |
 | `routingLog` | Nơi hook ghi lượt bắn (`ts, branch, decision, triggers` — không bao giờ ghi prompt). Không khai = không ghi |
 | `delegate` | `"default"` (mặc định) \| `"aggressive"`. Aggressive: 1 đầu việc khớp trigger là hook gợi ý giao (code → Codex, research → Anti) kèm ngưỡng tự làm ~10 lượt tool / 3 file; repo không khai `routingTriggers` thì dùng bộ mặc định `default-code`/`default-research` (`scripts/lib/default-routing-triggers.mjs`), trigger repo cùng `id` đè. Chỉ đổi lời gợi ý, không cấp quyền |
-| `modelTiers` | Ghi đè bảng bậc `--tier` theo bậc: `agy` (mảng regex neo `^...$` trên tên `agy models`), `app` (`flash_lite\|flash\|pro\|inherit`), `effort` (`low\|medium\|high`). Dùng khi nhà cung cấp đổi lược đặt tên. Không khai = bảng mặc định trong `scripts/lib/model-tiers.mjs` |
+| `modelTiers` | Ghi đè bảng bậc `--tier` theo bậc: `agy` (mảng regex neo `^...$` trên tên `agy models`), `app` (`flash_lite\|flash\|pro\|inherit`), `codex` (mảng regex neo trên slug catalog Codex), `effort` (`low\|medium\|high\|xhigh\|max`). Dùng khi nhà cung cấp đổi lược đặt tên. Không khai = bảng mặc định trong `scripts/lib/model-tiers.mjs` |
 | `redactConfig` | File `.json` (nên gitignore) có mục `redact` — `internalDomains`, `internalHosts`, `emailDomains` — cho bộ che của state phiên và export transcript; mọi `<mục>.origin` trong file cũng bị che. Tách file vì đây là phần riêng tư, còn `crew.config.json` thì commit. Không khai = chỉ che theo hình dạng chung |
 
 Luật viết bằng lời — mục tiêu, cách tạo/đóng task, công cụ không được tự gọi — nằm ở
