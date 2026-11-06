@@ -6,6 +6,9 @@
 #
 # FAKE_MODE picks the shape. FAKE_EVIDENCE is where the "worker" writes.
 [ "$1" = "--version" ] && { echo "fake-codex 0.0.1"; exit 0; }
+# `codex debug models`: catalog lấy từ FAKE_CODEX_MODELS (JSON), không khai thì lỗi như
+# máy chưa đăng nhập — để test thấy được đường "không đọc được catalog".
+[ "$1" = "debug" ] && [ "$2" = "models" ] && { [ -n "$FAKE_CODEX_MODELS" ] && { printf '%s\n' "$FAKE_CODEX_MODELS"; exit 0; }; echo "not logged in" >&2; exit 1; }
 EV="$FAKE_EVIDENCE"
 case "$FAKE_MODE" in
   ok)

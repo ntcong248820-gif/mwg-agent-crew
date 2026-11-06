@@ -6,7 +6,7 @@ when_to_use: "Trigger: giao việc, chia việc, chạy song song, nhờ Codex, 
 category: agent-ops
 keywords: [crew, dispatch, multi-agent, song-song, codex, antigravity, worker]
 metadata:
-  version: "2.1.3"
+  version: "2.2.0"
 ---
 
 # agent-crew
@@ -162,6 +162,7 @@ Tiêu chí duy nhất, theo `references/routing-table.md` — **không** phân t
 | Rule đã thành văn trong một `SKILL.md`, chỉ cần thi hành đúng và nhanh | Antigravity |
 | Cần phán đoán ngoài văn bản: đọc số, chọn hướng, quyết nghiệp vụ | Claude |
 | Code, pipeline, logic nhiều bước, refactor | Codex |
+| Suy luận nhiều bước / sửa bug khó / thiết kế lớn mà muốn đỡ token Claude | Codex `--tier deep` hoặc `max` |
 
 `CLAUDE.md` của repo có bảng skill → worker thì bảng đó thắng bảng trên.
 
@@ -209,10 +210,10 @@ hai job không bao giờ trùng file.
 | Cờ | Luật |
 | --- | --- |
 | `--role` | Bắt buộc, `owner` \| `assist` |
-| `--tier` | **Cách mặc định** chọn model cho Anti và Codex: `light\|standard\|deep\|code\|claude\|claude-max`. Crew đổi ra tên `agy models` còn sống (Anti headless), bậc agentapi (Anti app) hoặc `--effort` (Codex), ghi cả bậc lẫn model vào sổ. Bậc nào hợp loại việc nào: `references/routing-table.md` mục *Model*. `code` chỉ cho Codex; `claude`/`claude-max` chỉ cho Anti headless (model Claude chạy bằng quota Antigravity, không tốn token Claude) |
-| `--bump-from <seq>` | Job trước chưa đạt vì model yếu: nâng đúng 1 bậc từ bậc của job đó (`light→standard→deep`), tự ghi note. Không dùng cùng `--tier` |
+| `--tier` | **Cách mặc định** chọn model cho Anti và Codex: `light\|standard\|deep\|code\|max\|claude\|claude-max`. Crew đổi ra tên `agy models` còn sống (Anti headless), bậc agentapi (Anti app), hoặc model + effort trong catalog Codex (Luna/Terra/Sol/Astra), ghi cả bậc lẫn model vào sổ. Bậc nào hợp loại việc nào: `references/routing-table.md` mục *Model*. `code`/`max` chỉ cho Codex; `claude`/`claude-max` chỉ cho Anti headless (model Claude chạy bằng quota Antigravity, không tốn token Claude) |
+| `--bump-from <seq>` | Job trước chưa đạt vì model yếu: nâng đúng 1 bậc từ bậc của job đó (`light→standard→deep`; Codex thêm `deep`/`code→max`), tự ghi note. Không dùng cùng `--tier` |
 | `--model` | Ép tay tên model (thắng `--tier`, ghi note). Bắt buộc với job Claude. Tên lấy từ `crew doctor`, **không** từ trí nhớ: tên cũ là job chết ngay lượt đầu. Anti `app` chỉ nhận `flash_lite\|flash\|pro\|inherit` |
-| `--effort` | Ép tay mức Codex (`low\|medium\|high`), thắng `--tier` |
+| `--effort` | Ép tay mức Codex (`low\|medium\|high\|xhigh\|max\|ultra`), chỉ đè effort của `--tier`, model vẫn theo bậc |
 | `--transport app --note "..."` | Chỉ Anti, chỉ trong 3 ca ở Bước 3; thiếu `--note` là bị từ chối. Codex bị từ chối dù có `--note` |
 | `--allow <prefix>` | Job được ghi ngoài thư mục của run (lặp được). Control plane và file bảo vệ không khai được |
 

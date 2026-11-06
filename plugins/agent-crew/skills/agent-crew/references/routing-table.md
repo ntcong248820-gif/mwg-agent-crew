@@ -125,10 +125,11 @@ giác việc nặng hay nhẹ. Ghi bằng `crew add-job --tier <bậc>`; crew đ
 
 | Loại việc | `--tier` | Anti headless (`agy`) | Anti app (`agentapi`) | Codex (headless) |
 | --- | --- | --- | --- | --- |
-| Điền theo mẫu, chuẩn hoá bảng, readback/export | `light` | flash-lite, không có thì flash-low | `flash_lite` | `--effort low` |
-| Thi hành skill nhiều case, crawl + phân loại theo whitelist | `standard` | flash-medium | `flash` | `--effort low` |
-| Suy luận từ dữ liệu sang output chưa có mẫu sẵn | `deep` | pro-high, pro, không có Pro thì flash-high | `pro` | `--effort medium` |
-| Code/pipeline nhiều bước, refactor tool | `code` | — | — | `--effort high` |
+| Điền theo mẫu, chuẩn hoá bảng, readback/export | `light` | flash-lite, không có thì flash-low | `flash_lite` | Luna mới nhất, `low` |
+| Thi hành skill nhiều case, crawl + phân loại theo whitelist | `standard` | flash-medium | `flash` | Terra mới nhất, `medium` |
+| Suy luận từ dữ liệu sang output chưa có mẫu sẵn; sửa bug khó | `deep` | pro-high, pro, không có Pro thì flash-high | `pro` | Sol mới nhất, `xhigh` |
+| Code/pipeline nhiều bước, refactor tool | `code` | — | — | Sol mới nhất, `high` |
+| Việc khó nhất: kiến trúc lớn, bài toán `deep`/`code` chưa giải được | `max` | — | — | Astra mới nhất, `max` |
 | Phán đoán sâu muốn giao đi để đỡ token Claude; viết/tổng hợp cần giọng tốt | `claude` | claude-sonnet bản mới nhất | — | — |
 | Như trên, việc khó nhất (suy luận nhiều bước, review thiết kế) | `claude-max` | claude-opus bản mới nhất | — | — |
 
@@ -138,14 +139,23 @@ và `gpt-5.5` cùng hỏng ở hai job đầu của một run). `--tier` chọn 
 lúc ghi sổ (regex neo, lấy bản cao nhất); `crew doctor` in mỗi bậc đang ra tên nào. Bậc
 không khớp tên còn sống thì `add-job` báo lỗi kèm danh sách, **không** trượt sang bậc khác.
 Nhà cung cấp đổi lược đặt tên thì repo ghi đè bằng `modelTiers` trong `crew.config.json`
-(`{"deep": {"agy": ["^gemini-[\\d.]+-pro$"]}}`; khoá `agy`/`app`/`effort`), không cần sửa code.
+(`{"deep": {"agy": ["^gemini-[\\d.]+-pro$"]}}`; khoá `agy`/`app`/`codex`/`effort`), không cần sửa code.
+
+**Codex làm được việc khó**, không chỉ việc code thường: `deep` (Sol `xhigh`) và `max`
+(Astra `max`) là chỗ giao suy luận nhiều bước, sửa bug khó, thiết kế lớn khi muốn đỡ token
+Claude. Dòng → bậc theo mô tả catalog Codex và tài liệu OpenAI (research 07/11, Anti, có
+nguồn): Luna "nhanh, rẻ, việc dễ"; Terra "cân bằng, việc thẳng"; Sol "chủ lực cho code và
+việc hằng ngày", mặc định của Codex, benchmark code ngang Astra với giá ~1/5; Astra "đỉnh,
+cho việc khắt khe nhất". Effort `ultra` (tự chia subagent bên trong Codex) **không** vào
+bảng: trùng việc chia job của crew và nhân token theo số subagent — cần thì `--effort ultra` tay.
 
 Bậc `claude`/`claude-max` chạy model Claude **bằng quota Antigravity**, không tốn token
 Claude của owner (đo 06/11: chạy headless như Gemini, JSON cùng hình dạng). Chỉ Anti
 headless. Credit Antigravity mỗi lượt chưa đo được từ CLI.
 
 Bậc chỉ là điểm khởi đầu. Job fail vì model yếu thì **nâng đúng 1 bậc**:
-`crew add-job --bump-from <seq>` (`light→standard→deep`, tự ghi note), không nhảy thẳng
+`crew add-job --bump-from <seq>` (`light→standard→deep`, Codex thêm `deep`/`code→max`;
+tự ghi note), không nhảy thẳng
 lên bậc cao nhất cho mọi thứ — làm vậy thì lần sau không ai biết việc nào thật sự cần
 bậc cao. `deep` không tự nâng lên `claude`: đổi nhà cung cấp là quyết định có chủ ý,
 ghi bằng `--tier` tay.
@@ -156,7 +166,7 @@ Ràng buộc từng runtime:
 | --- | --- |
 | `agy` | nhận tên model đầy đủ; `agy models` liệt kê bản còn sống |
 | `agentapi` | **chỉ** nhận `flash_lite\|flash\|pro\|inherit`, không nhận tên đầy đủ |
-| Codex | Bậc đặt bằng `--effort`; `--tier` ghi `model` là model trong `~/.codex/config.toml` và `crew run` truyền `-m` từ sổ — để trống thì manifest không ghi được model nào đã chạy, đúng cái field này sinh ra để đo. Cache model của Codex liệt kê cả model tài khoản không được dùng, nên tin model trong config máy hơn cache. Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
+| Codex | Từ 2.2.0 bậc chọn cả model lẫn effort: regex neo trên slug catalog của Codex (`~/.codex/models_cache.json`, model `hide` bị bỏ; không có cache thì `codex debug models`), bản cao nhất thắng (`gpt-6.1-sol` > `gpt-6-sol`), model không nhận effort của bậc thì báo lỗi. `crew run` truyền `-m` và effort từ sổ. `--model`/`--effort` tay chỉ đè đúng phần mình khai. Cache ghi `identity` của tài khoản; đo 07/11 mọi model `list` cùng quyền `standard`, và Sol/Terra/Luna chạy thật được (Astra là model config). Đo 2026-08-24: codex **im lặng bỏ qua** `model_reasoning_effort` sai chính tả, nên adapter tự whitelist để bắt typo |
 
 **Không có `--tier` hay `--model` thì không dispatch.** Trước phase 03, mọi job trong mọi
 manifest đều `"model": null` — knob có mà chưa ai bật, nên không có cách nào đo model

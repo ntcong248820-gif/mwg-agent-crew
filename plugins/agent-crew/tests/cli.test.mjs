@@ -47,6 +47,15 @@ const gitRepo = (prefix) => {
   // HOME giả có ~/.codex/config.toml riêng, để model Codex không phụ thuộc máy chạy test.
   const home = mkdtempSync(join(tmpdir(), "cli-tier-home-"));
   writeFile(join(home, ".codex", "config.toml"), 'model = "gpt-test-1"\n');
+  // Catalog Codex giả: hai đời Sol (bản mới phải thắng), một Astra, một model ẩn.
+  const lv = (...e) => e.map((effort) => ({ effort }));
+  const catalog = { models: [
+    { slug: "gpt-7-sol", visibility: "list", supported_reasoning_levels: lv("low", "medium", "high", "xhigh", "max") },
+    { slug: "gpt-6-sol", visibility: "list", supported_reasoning_levels: lv("low", "medium", "high", "xhigh", "max") },
+    { slug: "gpt-7-astra", visibility: "list", supported_reasoning_levels: lv("low", "medium", "high", "xhigh", "max") },
+    { slug: "gpt-9-sol", visibility: "hide", supported_reasoning_levels: lv("low") },
+  ] };
+  writeFile(join(home, ".codex", "models_cache.json"), JSON.stringify(catalog));
   const env = (extra = {}) => ({ ...process.env, HOME: home, PATH: `${FIXTURE_BIN}${delimiter}${process.env.PATH}`, ...extra });
   const ws = gitRepo("cli-tier-");
   const mp = crew(["new-run", "--run", "261106-0900"], { cwd: ws }).out;
@@ -56,7 +65,7 @@ const gitRepo = (prefix) => {
   t.check("--tier standard cho anti: exit 0", add(["--worker", "anti", "--tier", "standard"]).code, 0);
   t.check("...sổ ghi tier và model còn sống", `${job(1).tier}|${job(1).model}`, "standard|gemini-3.8-flash-medium");
   t.check("--tier claude cho anti → model Claude qua agy", (add(["--worker", "anti", "--tier", "claude"]), job(2).model), "claude-sonnet-4-6");
-  t.check("--tier code cho codex → --effort high, model từ config máy", (add(["--worker", "codex", "--tier", "code"]), `${job(3).tier}|${job(3).effort}|${job(3).model}`), "code|high|gpt-test-1");
+  t.check("--tier code cho codex → Sol mới nhất trong catalog (bỏ model ẩn), effort high", (add(["--worker", "codex", "--tier", "code"]), `${job(3).tier}|${job(3).effort}|${job(3).model}`), "code|high|gpt-7-sol");
 
   const bumped = add(["--worker", "anti", "--bump-from", "1"]);
   t.check("--bump-from 1: exit 0", bumped.code, 0);
@@ -89,6 +98,18 @@ const gitRepo = (prefix) => {
   const mj = last2();
   t.check("--model tay thắng --tier, không cần agy models", `${manual.code}|${mj.tier}|${mj.model}`, "0|light|gemini-3.8-flash-high");
   t.check("...note ghi cờ tay đã thắng", mj.notes.includes("--model tay thắng --tier light"), true);
+  // Codex: bậc chọn cả model lẫn effort; cờ tay chỉ đè phần mình khai.
+  const cx = add2(["--worker", "codex", "--tier", "max"]);
+  t.check("codex --tier max → Astra, effort max", `${cx.code}|${last2().model}|${last2().effort}`, "0|gpt-7-astra|max");
+  add2(["--worker", "codex", "--tier", "deep", "--effort", "medium"]);
+  t.check("codex --effort tay đè effort, model vẫn theo bậc", `${last2().model}|${last2().effort}|${last2().notes.includes("--effort tay thắng --tier deep")}`, "gpt-7-sol|medium|true");
+  add2(["--worker", "codex", "--bump-from", String(last2().seq)]);
+  t.check("codex --bump-from job deep → max (Astra)", `${last2().tier}|${last2().model}`, "max|gpt-7-astra");
+  const noCat = crew(["add-job", mp2, "--role", "assist", "--title", "t", "--worker", "codex", "--tier", "code"], { cwd: ws, env: { ...env(), HOME: mkdtempSync(join(tmpdir(), "cli-tier-nocat-")) } });
+  t.check("không có catalog Codex → exit khác 0, gợi --effort tay", noCat.code !== 0 && noCat.err.includes("--effort"), true);
+  const viaCmd = crew(["add-job", mp2, "--role", "assist", "--title", "t", "--worker", "codex", "--tier", "code"],
+    { cwd: ws, env: { ...env(), HOME: mkdtempSync(join(tmpdir(), "cli-tier-cmd-")), FAKE_CODEX_MODELS: JSON.stringify(catalog) } });
+  t.check("không có cache thì hỏi `codex debug models`", `${viaCmd.code}|${last2().model}`, "0|gpt-7-sol");
   t.check("anti app --tier deep → bậc agentapi pro",
     (add2(["--worker", "anti", "--tier", "deep", "--transport", "app", "--note", "cần người trả prompt permission"]), last2().model), "pro");
   t.check("thiếu cả --tier lẫn --model → exit 2, gợi --tier", (() => { const r = add2(["--worker", "anti"]); return r.code === 2 && r.err.includes("--tier"); })(), true);

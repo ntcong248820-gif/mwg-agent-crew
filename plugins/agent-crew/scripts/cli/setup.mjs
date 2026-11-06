@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DELEGATE_MODES, loadCrewConfig } from "../lib/crew-config.mjs";
-import { TIERS, TierError, codexConfigModel, parseAgyModels, resolveTier } from "../lib/model-tiers.mjs";
+import { TIERS, TierError, codexConfigModel, liveCodexModels, parseAgyModels, resolveTier } from "../lib/model-tiers.mjs";
 import { CONFIG_NAME, DEFAULT_LAYOUT, loadLayout } from "../lib/crew-layout.mjs";
 import { CliError, parseFlags, workspaceRoot } from "./run-commands.mjs";
 
@@ -33,11 +33,11 @@ export { codexConfigModel, parseAgyModels };
  * Mỗi bậc `--tier` đang ra gì trên máy này: Anti headless (theo `agy models`),
  * Anti app, Codex. Bậc không khớp thì in lý do, không tính là lỗi của doctor.
  */
-export function tierTable(names, overrides = {}) {
+export function tierTable(names, overrides = {}, codexModels = []) {
   const cell = (args) => {
     try {
       const r = resolveTier({ ...args, overrides });
-      return r.effort ? `--effort ${r.effort}` : r.model;
+      return r.effort ? `${r.model} ${r.effort}` : r.model;
     } catch (err) {
       if (!(err instanceof TierError)) throw err;
       return "—";
@@ -45,7 +45,7 @@ export function tierTable(names, overrides = {}) {
   };
   return TIERS.map((tier) => `${tier.padEnd(10)} anti ${cell({ worker: "antigravity", tier, liveAgyModels: names })}` +
     ` · anti app ${cell({ worker: "antigravity", transport: "app", tier })}` +
-    ` · codex ${cell({ worker: "codex", tier })}`);
+    ` · codex ${cell({ worker: "codex", tier, liveCodexModels: codexModels })}`);
 }
 
 /** Slug model trong cache của Codex. Cache liệt kê model của nhà cung cấp, không nói tài khoản này được dùng cái nào. */
@@ -133,7 +133,9 @@ export async function doctor(argv, { cwd }) {
 
   // Một chữ `--tier` ra model nào trên máy này. "—" là bậc không dành cho đường đó
   // (hoặc không khớp model còn sống); add-job sẽ báo lý do đầy đủ.
-  tierTable(agyNames, modelTiers).forEach((row, i) => say(i ? "" : "tier", row));
+  let codexModels = [];
+  if (workers.includes("codex")) try { codexModels = liveCodexModels(); } catch { /* bậc Codex in "—" */ }
+  tierTable(agyNames, modelTiers, codexModels).forEach((row, i) => say(i ? "" : "tier", row));
 
   // Anti app là ngoại lệ có tên, không phải điều kiện: báo, không tính là lỗi.
   try {

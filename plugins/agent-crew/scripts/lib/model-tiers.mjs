@@ -16,6 +16,15 @@
  * Bậc `claude`/`claude-max` chạy model Claude bằng quota Antigravity (chỉ Anti
  * headless, đo 06/11 trong docs/transport-measurements.md). Chúng nằm ngoài chuỗi
  * nâng bậc: đổi nhà cung cấp là quyết định có chủ ý, không phải bước tự động.
+ *
+ * Codex: mỗi bậc chọn cả model lẫn effort, theo cùng luật regex trên catalog
+ * Codex (`~/.codex/models_cache.json`, thiếu thì `codex debug models`). Trước
+ * 2.2.0 bậc Codex chỉ đổi effort và model ăn theo config máy, nên `--tier code`
+ * ép `high` lên đúng model mà owner đặt `xhigh` — giao qua crew chạy yếu hơn gõ tay.
+ * Bảng dòng → bậc dựa trên mô tả catalog và tài liệu OpenAI (research 07/11,
+ * .crew/runs/261107-0030): Luna nhẹ/rẻ, Terra cân bằng, Sol chủ lực cho code,
+ * Astra đỉnh cho việc khó nhất. `ultra` (tự chia subagent) cố ý không vào bảng:
+ * nó trùng việc chia job của chính crew và nhân token theo số subagent.
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -24,32 +33,41 @@ import { join } from "node:path";
 
 export class TierError extends Error {}
 
-export const TIERS = Object.freeze(["light", "standard", "deep", "code", "claude", "claude-max"]);
+export const TIERS = Object.freeze(["light", "standard", "deep", "code", "max", "claude", "claude-max"]);
 
 /** Bậc mà `agentapi` (Anti app) nhận. */
 export const APP_TIERS = Object.freeze(["flash_lite", "flash", "pro", "inherit"]);
-export const EFFORTS = Object.freeze(["low", "medium", "high"]);
+/** Mức Codex khai được trong `modelTiers` (ultra để ép tay bằng --effort, không vào bảng). */
+export const EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
 
 /**
  * `agy`: regex (chuỗi, neo ^...$) theo thứ tự ưu tiên; null = bậc không dành cho
  * Anti headless. `app`: bậc agentapi; null = không dùng được ở Anti app.
- * `effort`: mức Codex; null = không dành cho Codex.
+ * `codex`: regex trên slug catalog Codex; `effort`: mức Codex. Cả hai null = bậc
+ * không dành cho Codex.
  */
+const SOL = "^gpt-[\\d.]+-sol$";
 export const DEFAULT_TIER_MAP = Object.freeze({
-  light: { agy: ["^gemini-[\\d.]+-flash-lite$", "^gemini-[\\d.]+-flash-low$"], app: "flash_lite", effort: "low" },
-  standard: { agy: ["^gemini-[\\d.]+-flash-medium$"], app: "flash", effort: "low" },
-  deep: { agy: ["^gemini-[\\d.]+-pro-high$", "^gemini-[\\d.]+-pro$", "^gemini-[\\d.]+-flash-high$"], app: "pro", effort: "medium" },
-  code: { agy: null, app: null, effort: "high" },
-  claude: { agy: ["^claude-sonnet-[\\d-]+$"], app: null, effort: null },
-  "claude-max": { agy: ["^claude-opus-[\\d-]+(-thinking)?$"], app: null, effort: null },
+  light: { agy: ["^gemini-[\\d.]+-flash-lite$", "^gemini-[\\d.]+-flash-low$"], app: "flash_lite", codex: ["^gpt-[\\d.]+-luna$"], effort: "low" },
+  standard: { agy: ["^gemini-[\\d.]+-flash-medium$"], app: "flash", codex: ["^gpt-[\\d.]+-terra$"], effort: "medium" },
+  deep: { agy: ["^gemini-[\\d.]+-pro-high$", "^gemini-[\\d.]+-pro$", "^gemini-[\\d.]+-flash-high$"], app: "pro", codex: [SOL], effort: "xhigh" },
+  code: { agy: null, app: null, codex: [SOL], effort: "high" },
+  max: { agy: null, app: null, codex: ["^gpt-[\\d.]+-astra$"], effort: "max" },
+  claude: { agy: ["^claude-sonnet-[\\d-]+$"], app: null, codex: null, effort: null },
+  "claude-max": { agy: ["^claude-opus-[\\d-]+(-thinking)?$"], app: null, codex: null, effort: null },
 });
 
-/** Chuỗi nâng bậc khi job trước chưa đạt. Bậc ngoài chuỗi đứng yên. */
+/**
+ * Chuỗi nâng bậc khi job trước chưa đạt: `light → standard → deep`, rồi với
+ * Codex `deep`/`code → max` (Astra). Anti không có bậc `max` nên dừng ở `deep`.
+ * Bậc ngoài chuỗi (`claude*`, `max`) đứng yên.
+ */
 const BUMP = Object.freeze({ light: "standard", standard: "deep" });
+const CODEX_BUMP = Object.freeze({ ...BUMP, deep: "max", code: "max" });
 
-export function bumpTier(tier) {
+export function bumpTier(tier, worker = null) {
   assertTier(tier);
-  return BUMP[tier] ?? tier;
+  return (worker === "codex" ? CODEX_BUMP : BUMP)[tier] ?? tier;
 }
 
 function assertTier(tier) {
@@ -69,6 +87,27 @@ export function codexConfigModel(home = homedir()) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Model Codex dùng được: `[{slug, efforts}]` từ cache catalog của chính Codex
+ * (`~/.codex/models_cache.json`, model ẩn bị bỏ). Không có cache thì hỏi
+ * `codex debug models`. Không đọc được thì lỗi nói rõ đường tay.
+ */
+export function liveCodexModels(home = homedir()) {
+  const parse = (text) => (JSON.parse(text).models ?? [])
+    .filter((m) => m?.slug && m.visibility !== "hide")
+    .map((m) => ({ slug: m.slug, efforts: (m.supported_reasoning_levels ?? []).map((l) => l?.effort ?? l).filter(Boolean) }));
+  let models = [];
+  try { models = parse(readFileSync(join(home, ".codex", "models_cache.json"), "utf8")); } catch { /* thử lệnh */ }
+  if (!models.length) {
+    const p = spawnSync("codex", ["debug", "models"], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
+    try { if (p.status === 0) models = parse(p.stdout); } catch { /* báo dưới */ }
+  }
+  if (!models.length) {
+    throw new TierError("không đọc được catalog model của Codex (~/.codex/models_cache.json, `codex debug models`) để đổi --tier\n  → truyền --effort <mức> tay; model lấy theo ~/.codex/config.toml");
+  }
+  return models;
 }
 
 /** Gọi `agy models` (30s như doctor). Không đọc được thì lỗi nói rõ đường tay. */
@@ -110,21 +149,34 @@ export function tierMap(overrides = {}) {
 
 /**
  * Đổi một bậc ra thứ adapter nhận: `{tier, model, effort}`. Anti headless cần
- * `liveAgyModels`, Codex nhận `codexModel` (model trong ~/.codex/config.toml). `liveAgyModels: null` chỉ kiểm
- * bậc có hợp worker/transport không (dùng khi cờ tay đã chọn model), không chọn tên.
+ * `liveAgyModels`, Codex cần `liveCodexModels` (`[{slug, efforts}]`). Truyền `null`
+ * thì chỉ kiểm bậc có hợp worker/transport không (cờ tay đã chọn), không chọn tên.
  */
-export function resolveTier({ worker, transport = "headless", tier, liveAgyModels: names = [], codexModel = null, overrides = {} }) {
+export function resolveTier({ worker, transport = "headless", tier, liveAgyModels: names = [], liveCodexModels: codexModels = [], overrides = {} }) {
   assertTier(tier);
   const row = tierMap(overrides)[tier];
   if (worker === "claude") {
     throw new TierError("job Claude không nhận --tier: Claude tự làm bằng model của phiên, truyền --model");
   }
   if (worker === "codex") {
-    if (!row.effort) throw new TierError(`tier ${tier} chỉ cho Anti headless (model Claude chạy qua quota Antigravity); Codex nhận light|standard|deep|code`);
-    // Bậc Codex là effort; model vẫn ghi (lấy từ config máy) để sổ đo được model nào đã chạy.
-    return { tier, model: codexModel, effort: row.effort };
+    if (!row.codex || !row.effort) throw new TierError(`tier ${tier} chỉ cho Anti headless (model Claude chạy qua quota Antigravity); Codex nhận light|standard|deep|code|max`);
+    if (codexModels === null) return { tier, model: null, effort: null };
+    const slugs = codexModels.map((m) => m.slug);
+    const model = pickModel(row.codex, slugs);
+    if (!model) {
+      throw new TierError(
+        `tier ${tier} không khớp model Codex nào trong catalog (${row.codex.join(", ")})\n` +
+        `  → model Codex còn liệt kê: ${slugs.join(", ") || "(không có)"}\n` +
+        "  → truyền --effort tay (model theo config máy), hoặc khai modelTiers trong crew.config.json",
+      );
+    }
+    const efforts = codexModels.find((m) => m.slug === model)?.efforts ?? [];
+    if (efforts.length && !efforts.includes(row.effort)) {
+      throw new TierError(`tier ${tier}: ${model} không nhận effort ${row.effort} (nhận: ${efforts.join(", ")}) — khai modelTiers.${tier}.effort`);
+    }
+    return { tier, model, effort: row.effort };
   }
-  if (tier === "code" && !row.agy && !row.app) throw new TierError("tier code chỉ cho Codex");
+  if ((tier === "code" || tier === "max") && !row.agy && !row.app) throw new TierError(`tier ${tier} chỉ cho Codex`);
   if (transport === "app") {
     if (!row.app) throw new TierError(`tier ${tier} không dùng được ở Anti app: agentapi chỉ nhận ${APP_TIERS.join("|")}`);
     return { tier, model: row.app, effort: null };
@@ -143,26 +195,28 @@ export function resolveTier({ worker, transport = "headless", tier, liveAgyModel
 }
 
 /**
- * Validate `modelTiers` trong crew.config.json: `{ "<tier>": {agy?, app?, effort?} }`.
+ * Validate `modelTiers` trong crew.config.json: `{ "<tier>": {agy?, app?, codex?, effort?} }`.
  * `fail(msg)` ném lỗi theo kiểu của config loader.
  */
 export function normalizeModelTiers(value, fail) {
   if (value === undefined || value === null) return {};
-  if (typeof value !== "object" || Array.isArray(value)) fail("modelTiers phải là object {tier: {agy?, app?, effort?}}");
+  if (typeof value !== "object" || Array.isArray(value)) fail("modelTiers phải là object {tier: {agy?, app?, codex?, effort?}}");
   const out = {};
   for (const [tier, row] of Object.entries(value)) {
     if (!TIERS.includes(tier)) fail(`modelTiers: tier lạ "${tier}" (nhận: ${TIERS.join(", ")})`);
-    if (!row || typeof row !== "object" || Array.isArray(row)) fail(`modelTiers.${tier} phải là {agy?, app?, effort?}`);
-    const extra = Object.keys(row).filter((k) => !["agy", "app", "effort"].includes(k));
-    if (extra.length) fail(`modelTiers.${tier}: khoá lạ ${extra.join(", ")} (nhận: agy, app, effort)`);
+    if (!row || typeof row !== "object" || Array.isArray(row)) fail(`modelTiers.${tier} phải là {agy?, app?, codex?, effort?}`);
+    const extra = Object.keys(row).filter((k) => !["agy", "app", "codex", "effort"].includes(k));
+    if (extra.length) fail(`modelTiers.${tier}: khoá lạ ${extra.join(", ")} (nhận: agy, app, codex, effort)`);
     const entry = {};
-    if ("agy" in row) {
-      if (!Array.isArray(row.agy) || !row.agy.length) fail(`modelTiers.${tier}.agy phải là mảng regex dạng chuỗi, không rỗng`);
-      row.agy.forEach((p, i) => {
-        if (typeof p !== "string" || !p.startsWith("^") || !p.endsWith("$")) fail(`modelTiers.${tier}.agy[${i}] phải là regex neo ^...$: ${JSON.stringify(p)}`);
-        try { new RegExp(p); } catch (err) { fail(`modelTiers.${tier}.agy[${i}] không phải regex hợp lệ: ${err.message}`); }
+    for (const key of ["agy", "codex"]) {
+      if (!(key in row)) continue;
+      const list = row[key];
+      if (!Array.isArray(list) || !list.length) fail(`modelTiers.${tier}.${key} phải là mảng regex dạng chuỗi, không rỗng`);
+      list.forEach((p, i) => {
+        if (typeof p !== "string" || !p.startsWith("^") || !p.endsWith("$")) fail(`modelTiers.${tier}.${key}[${i}] phải là regex neo ^...$: ${JSON.stringify(p)}`);
+        try { new RegExp(p); } catch (err) { fail(`modelTiers.${tier}.${key}[${i}] không phải regex hợp lệ: ${err.message}`); }
       });
-      entry.agy = Object.freeze([...row.agy]);
+      entry[key] = Object.freeze([...list]);
     }
     if ("app" in row) {
       if (!APP_TIERS.includes(row.app)) fail(`modelTiers.${tier}.app phải là ${APP_TIERS.join("|")}: ${JSON.stringify(row.app)}`);
