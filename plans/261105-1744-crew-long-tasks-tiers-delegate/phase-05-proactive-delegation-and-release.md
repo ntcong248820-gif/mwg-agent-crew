@@ -78,3 +78,4 @@ dependencies: [1, 2, 3, 4]
 - Kiểm tay: repo `{"delegate":"aggressive"}` + prompt "refactor module parser cho gọn" → khối "giao việc chủ động"; đổi config `{}` → im.
 - Bước 7 (bật thử ở repo thật, đọc `routingLog` sau ~1 tuần) là việc của owner.
 - Bump 2.1.0, cài bằng `claude plugin marketplace update` + `claude plugin update` (2.0.6 → 2.1.0, bỏ qua cài riêng 2.0.7), `diff -rq` bản cài với source rỗng. Bước 7 còn chờ owner.
+- Sót sau release: `cost-gate.md` dòng `print_timeout_max` vẫn trỏ `--resume` thay vì `--chain` (phase 4 lẽ ra đổi). Sửa ở 2.1.1, cài lại, `diff -rq` rỗng.
