@@ -51,7 +51,7 @@ Trần 30m **mỗi lát** giữ nguyên (an toàn quota, token Google Workspace 
 | 1 | [Codex chỉ headless + sửa doc lệch](./phase-01-codex-headless-only-and-doc-fixes.md) | — | 3h | Completed |
 | 2 | [Bậc model `--tier`](./phase-02-model-tiers.md) | — | 5h | Completed |
 | 3 | [Hạn mềm + handoff (`Status: CONTINUE`)](./phase-03-soft-deadline-and-handoff.md) | — | 1d | Completed |
-| 4 | [Chuỗi lát `--chain` có budget](./phase-04-chain-runner.md) | 3 | 1.5d | Pending |
+| 4 | [Chuỗi lát `--chain` có budget](./phase-04-chain-runner.md) | 3 | 1.5d | Completed |
 | 5 | [Giao việc chủ động + release 2.1.0](./phase-05-proactive-delegation-and-release.md) | 1–4 | 5h | Pending |
 
 Thứ tự cook: 1 → 2 → 3 → 4 → 5. Không song song: phase nào cũng sửa `SKILL.md`.

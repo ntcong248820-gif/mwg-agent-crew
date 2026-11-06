@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Chuỗi lát --chain có budget"
-status: pending
+status: completed
 priority: P1
 effort: "1.5d"
 dependencies: [3]
@@ -80,15 +80,15 @@ crew run <w> --manifest M --job N --prompt-file P --chain [--budget 4h] [--max-s
 
 ## Tasks & Steps
 
-1. [ ] Hằng số + parse budget trong `crew-guards.mjs`, test.
-2. [ ] Trường chuỗi trong manifest; miễn `MAX_JOBS` ở **cả** `addJob` và `runFor`; trần 16 lát/run; test.
-3. [ ] `handoff-check.mjs` + test 4 phép kiểm.
-4. [ ] `chain-runner.mjs` (spawn async, signal, checkpoint, budget đếm từ sổ) + cờ CLI + sidecar.
-5. [ ] Collect `CHAINED` + report.
-6. [ ] Test chuỗi: CONTINUE→CONTINUE→checkpoint exit 4 → gọi lại → DONE (budget đếm tiếp); hết budget exit 3; max-slices; lát giữa `failed` exit 1; `resumeMismatch` exit 3; handoff không tiến triển exit 3; chữ đòi quyền exit 3; workspace-cli bị từ chối; chain-runner bị kill rồi chạy lại không reset budget; 6 job thường + lát vẫn add được, `runFor` vẫn trả run đó; lát thứ 17 trong run bị từ chối; SIGTERM chuyển xuống con (Codex headless).
-7. [ ] Doc + lệnh Monitor.
-8. [ ] Chạy thật 1 chuỗi Codex nhỏ (`--timeout 3m --budget 12m`) trong `.crew/` của repo này; ghi số đo vào `plugins/agent-crew/docs/transport-measurements.md`.
-9. [ ] Bump `plugin.json` bản vá (2.0.7), owner update plugin, `diff -rq` bản cài với source rỗng.
+1. [x] Hằng số + parse budget trong `crew-guards.mjs`, test.
+2. [x] Trường chuỗi trong manifest; miễn `MAX_JOBS` ở **cả** `addJob` và `runFor`; trần 16 lát/run; test.
+3. [x] `handoff-check.mjs` + test 4 phép kiểm.
+4. [x] `chain-runner.mjs` (spawn async, signal, checkpoint, budget đếm từ sổ) + cờ CLI + sidecar.
+5. [x] Collect `CHAINED` + report.
+6. [x] Test chuỗi: CONTINUE→CONTINUE→checkpoint exit 4 → gọi lại → DONE (budget đếm tiếp); hết budget exit 3; max-slices; lát giữa `failed` exit 1; `resumeMismatch` exit 3; handoff không tiến triển exit 3; chữ đòi quyền exit 3; workspace-cli bị từ chối; chain-runner bị kill rồi chạy lại không reset budget; 6 job thường + lát vẫn add được, `runFor` vẫn trả run đó; lát thứ 17 trong run bị từ chối; SIGTERM chuyển xuống con (Codex headless).
+7. [x] Doc + lệnh Monitor.
+8. [x] Chạy thật 1 chuỗi Codex nhỏ (`--timeout 3m --budget 12m`) trong `.crew/` của repo này; ghi số đo vào `plugins/agent-crew/docs/transport-measurements.md`.
+9. [x] Bump `plugin.json` bản vá (2.0.7), owner update plugin, `diff -rq` bản cài với source rỗng.
 
 ## Verification
 
@@ -100,3 +100,15 @@ crew run <w> --manifest M --job N --prompt-file P --chain [--budget 4h] [--max-s
 - Thread phình qua nhiều lát làm model chậm/đắt dần: ghi `usage` từng lát vào sidecar để đo; chưa chặn theo token (non-goal).
 - Handoff bị nhiễm chỉ thị: lát sau resume cùng thread nên vẫn thấy lượt trước. Giảm bằng kiểm cơ học + checkpoint Claude mỗi 2 lát + brief do dispatcher viết. Không chặn hẳn được; chấp nhận theo quyết định owner.
 - Checkpoint tốn token Claude mỗi ~1h: đổi lấy an toàn, owner đã chọn.
+
+## Ghi chú khi cook (2026-11-06)
+
+- `--chain` là nhánh trong `bin/crew.mjs run` → `scripts/lib/chain-runner.mjs`; mỗi lát quay lại chính `crew run` (spawn async), nên lát đi qua đúng `expandRunArgs`, claim slot, guard resume như job tay.
+- Phép "lát có đổi file" tách ra `scripts/lib/chain-slice-progress.mjs` (đụng đĩa): `touchedFiles` trước, rồi mtime dưới thư mục run + `filesMayModify`, loại sổ/brief/evidence mọi job (`worker-*.md`, job song song cũng ghi vào thư mục run)/log/sidecar. Anti không có `touchedFiles` nên chỉ còn mtime — chấp nhận, checkpoint là lớp sau.
+- Lát Codex chạy nhầm thread bị adapter chấm `failed`; chain-runner xét `resumeMismatch` **trước** trạng thái để dừng exit 3 "thread bị tách" đúng thiết kế, không phải exit 1.
+- Mỗi lát timeout = `min(--timeout, budget còn lại)`; còn < 60s thì coi như hết budget (lát ngắn hơn chỉ kịp đọc handoff).
+- Lát `pending` khi gọi lại (chuỗi chết giữa ghi sổ và bắn) → bắn đúng lát đó; lát `running` → từ chối exit 2.
+- Collect không cần sửa thêm: `CHAINED` có từ phase 3 nối theo `resumedFrom`; tên lát mang `— lát k` nên bảng report đọc được chuỗi mà không cần cột riêng.
+- Test: `handoff-check.test.mjs` (23), `chain-runner.test.mjs` (55, chạy thật qua `bin/crew.mjs` → codex-run → fake-codex mode `chain`).
+- Chạy thật (bước 8): 3 lát Codex cùng thread, checkpoint exit 4 sau lát 2, gọi lại → lát 3 DONE, `counter.txt` khớp 1..200, collect 1 PASS + 2 CHAINED, exit 0 sau khi bác (`--not-ours`) file phase 5 chính phiên này sửa trong lúc chuỗi chạy. Số đo ở `docs/transport-measurements.md`.
+- Bump 2.0.7 cùng commit với doc/plan; không cài riêng 2.0.7 vì phase 5 lên 2.1.0 ngay sau — cài một lần 2.1.0 (chứa đủ phase 4).
