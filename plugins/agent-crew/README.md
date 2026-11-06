@@ -111,6 +111,8 @@ thư mục không phải git trước khi bắn job nào.
 | `routingLog` | Nơi hook ghi lượt bắn (`ts, branch, decision, triggers` — không bao giờ ghi prompt). Không khai = không ghi |
 | `delegate` | `"default"` (mặc định) \| `"aggressive"`. Aggressive: 1 đầu việc khớp trigger là hook gợi ý giao (code → Codex, research → Anti) kèm ngưỡng tự làm ~10 lượt tool / 3 file; repo không khai `routingTriggers` thì dùng bộ mặc định `default-code`/`default-research` (`scripts/lib/default-routing-triggers.mjs`), trigger repo cùng `id` đè. Chỉ đổi lời gợi ý, không cấp quyền |
 | `modelTiers` | Ghi đè bảng bậc `--tier` theo bậc: `agy` (mảng regex neo `^...$` trên tên `agy models`), `app` (`flash_lite\|flash\|pro\|inherit`), `codex` (mảng regex neo trên slug catalog Codex), `effort` (`low\|medium\|high\|xhigh\|max`). Dùng khi nhà cung cấp đổi lược đặt tên. Không khai = bảng mặc định trong `scripts/lib/model-tiers.mjs` |
+| `workspaceCliConfigDir` | Hồ sơ gws (`~/...` hoặc tuyệt đối) mà job `--workspace-cli on` mint token; cùng thư mục được đưa cho worker. Máy có nhiều hồ sơ `~/.config/gws*` thì nên khai. Job đè được bằng `crew run codex ... --workspace-profile <dir>` |
+| `workspaceCliAccount` | Email mong đợi của token. Adapter hỏi Google token thuộc ai sau khi mint; lệch hoặc không đọc được thì từ chối trước khi spawn |
 | `redactConfig` | File `.json` (nên gitignore) có mục `redact` — `internalDomains`, `internalHosts`, `emailDomains` — cho bộ che của state phiên và export transcript; mọi `<mục>.origin` trong file cũng bị che. Tách file vì đây là phần riêng tư, còn `crew.config.json` thì commit. Không khai = chỉ che theo hình dạng chung |
 
 Luật viết bằng lời — mục tiêu, cách tạo/đóng task, công cụ không được tự gọi — nằm ở
