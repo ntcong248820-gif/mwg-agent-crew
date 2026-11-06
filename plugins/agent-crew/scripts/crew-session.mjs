@@ -14,7 +14,7 @@
  */
 import { existsSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { MAX_JOBS, readManifest } from "./crew-manifest.mjs";
+import { MAX_JOBS, countedJobs, readManifest } from "./crew-manifest.mjs";
 import { listRuns, loadLayout, usesTask } from "./lib/crew-layout.mjs";
 
 const WORKERS = { anti: "antigravity", antigravity: "antigravity", codex: "codex" };
@@ -61,7 +61,7 @@ export function todayStamp(now = new Date()) {
 export function runFor(scope, { date = todayStamp() } = {}) {
   if (!/^\d{6}$/.test(date)) throw new Error(`--date cần dạng YYMMDD, nhận "${date}"`);
   const open = runsOf(scope).find(({ m }) => String(m.runId).startsWith(`${date}-`)
-    && !(m.reports?.length) && m.lastCollect?.exitCode !== 0 && (m.jobs?.length ?? 0) < MAX_JOBS);
+    && !(m.reports?.length) && m.lastCollect?.exitCode !== 0 && countedJobs(m.jobs) < MAX_JOBS);
   return open?.path ?? null;
 }
 

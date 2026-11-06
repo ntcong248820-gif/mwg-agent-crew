@@ -208,6 +208,14 @@ export const MAX_DEPTH = 1;
  */
 export const MAX_JOBS = 6;
 export const MAX_PARALLEL = 3;
+/**
+ * Lát của một chuỗi (`chainOf`) không tính vào MAX_JOBS — chúng là một job chẻ
+ * theo thời gian, không phải việc mới — nhưng có trần riêng để run vẫn đọc được
+ * bằng mắt. `crew-session.runFor` đếm theo cùng luật.
+ */
+export const MAX_CHAIN_JOBS_PER_RUN = 16;
+/** Số job tính vào MAX_JOBS: mọi job trừ lát chuỗi. */
+export const countedJobs = (jobs) => (jobs ?? []).filter((j) => j.chainOf == null).length;
 
 /**
  * How long a `running` job keeps holding its parallel slot.
@@ -436,6 +444,8 @@ function resolveRouting(job) {
 const SEALED_JOB_FIELDS = new Set([
   "seq", "worker", "role", "transport", "evidence", "status", "filesMayModify",
   "holdsFingerprint", "holdsTamper", ...Object.values(READER_LEDGERS),
+  "tier", "chainOf", "slice", "chainStartedAt", "chainSlices", "chainElapsedMs",
+  "chainCheckpointAt", "chainCheckpointSlice", "chainStoppedFor",
 ]);
 
 /**
@@ -514,9 +524,18 @@ function assertFilesMayModify(list, workspace, layout = null) {
 export function addJob(manifestPath, job) {
   let added;
   updateManifest(manifestPath, (m) => {
-    if (m.jobs.length >= MAX_JOBS) {
+    const isSlice = job.chainOf != null;
+    if (isSlice) {
+      const root = m.jobs.find((j) => j.seq === job.chainOf);
+      if (!root || root.chainOf != null) throw new ManifestError(`chainOf ${job.chainOf}: không có job gốc đó trong run (lát chỉ nối vào job gốc)`);
+      if (!Number.isInteger(job.slice) || job.slice < 2) throw new ManifestError(`lát chuỗi cần slice là số nguyên ≥ 2, nhận ${JSON.stringify(job.slice)}`);
+      const slices = m.jobs.filter((j) => j.chainOf != null).length;
+      if (slices >= MAX_CHAIN_JOBS_PER_RUN) {
+        throw new ManifestError(`run đã có ${slices} lát chuỗi (tối đa ${MAX_CHAIN_JOBS_PER_RUN})\n  → mở run mới cho phần việc còn lại`);
+      }
+    } else if (countedJobs(m.jobs) >= MAX_JOBS) {
       throw new ManifestError(
-        `run already has ${m.jobs.length} jobs (max ${MAX_JOBS})\n` +
+        `run already has ${countedJobs(m.jobs)} jobs (max ${MAX_JOBS})\n` +
         "  → split the work across runs; a run nobody can hold in their head is a run nobody checks",
       );
     }
@@ -545,6 +564,8 @@ export function addJob(manifestPath, job) {
       // The one word the dispatcher chose (`--tier`), next to the model or effort
       // it resolved to. Null when the job was given a model or effort by hand.
       tier: job.tier ?? null,
+      // Lát k của chuỗi job `chainOf` (lát 1 là chính job gốc, không có field này).
+      ...(isSlice ? { chainOf: job.chainOf, slice: job.slice } : {}),
       title: job.title,
       evidence: job.evidence,
       // Path prefixes this job is allowed to write outside tasks/{task}/. Some

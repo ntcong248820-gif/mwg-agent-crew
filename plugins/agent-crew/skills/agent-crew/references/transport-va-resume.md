@@ -106,6 +106,42 @@ Thread do Codex app tạo trước 2.0.4 cũng tiếp được bằng đúng l�
 Các bề mặt resume đều ghi `resumedFrom` vào manifest, và đều so lại id sau khi chạy —
 lệch thì `resumeMismatch` + cổng `crew collect` bắt `--ack-runtime`.
 
+## Chuỗi lát `--chain` (thêm 2.0.7)
+
+`crew run <w> --manifest M --job N --prompt-file P --chain` là resume tự động có rào: lát
+`CONTINUE` → lát kế `--resume <conversationId lát trước>`, cùng worker/role/transport/tier
+(resume không nhận `--model`, model ăn theo thread). Mỗi lát là một job thật trong sổ
+(`chainOf: N`, `slice: k`, evidence riêng `worker-<w>-<seq>.md`, brief `brief-<w>-<seq>.md`
+do crew viết theo mẫu cố định — không chép chữ worker). Trạng thái chuỗi ghi trên job gốc:
+`chainStartedAt`, `chainSlices`, `chainElapsedMs`, `chainCheckpointAt`/`chainCheckpointSlice`,
+`chainStoppedFor`.
+
+- **Kiểm cơ học trước mỗi lát kế** (`scripts/lib/handoff-check.mjs`, không tốn token Claude):
+  đủ 4 mục handoff; `### Đang dở` khác lát trước; lát có đổi file ngoài evidence
+  (`touchedFiles` của Codex, không có thì mtime trong thư mục run + `filesMayModify`);
+  handoff không nhắc `dispatch`, `crew run`, `add-job`, `--sandbox-mode`, `--workspace-cli`,
+  `danger-full-access`, `CREW_ROLE`, đường control plane. Trượt → exit 3.
+- **Checkpoint mỗi 2 lát** (exit 4). Lát sau resume cùng thread nên vẫn thấy lượt trước —
+  handoff bị nhiễm chỉ thị không chặn hẳn được; checkpoint là chỗ Claude đọc.
+- **Phạm vi ghi không tự nới.** Lát kế lấy `filesMayModify` mới nhất của job gốc + lát
+  trước; muốn nới thì `crew amend <MP> --job N --allow ... --note ...` giữa 2 lát.
+- **Thread bị tách** (`resumeMismatch`) → dừng exit 3, không nối tiếp vào thread lạ.
+- **Signal.** Lát bắn bằng `spawn` async; SIGTERM vào chuỗi chuyển xuống lát đang chạy,
+  ghi `chainStoppedFor: "sigterm"`, exit 1. Ngoại lệ: lát **Anti headless** đợi `agy` trong
+  `spawnSync` nên không có handler — chết theo mặc định; thu dọn bằng `crew reconcile` /
+  slot hết hạn như mọi job Anti headless.
+- **Monitor.** Sidecar `chain-<N>.jsonl` (đường ở dòng `chain` của `crew paths`) có một
+  dòng `{"type":"crew.chain","slice","seq","status","conversationId","elapsedSec","usage"}`
+  mỗi lát, thêm `"stop"` khi chuỗi dừng hoặc tới checkpoint. Chuỗi bắn nền thì exit code đã
+  là ping; Monitor chỉ để thấy tiến độ giữa chừng:
+
+  ```bash
+  CHAIN=$(crew paths "$MP" --job N | awk -F'\t' '$1=="chain"{print $2}')
+  tail -n0 -F "$CHAIN" | grep --line-buffered '"type":"crew.chain"'
+  ```
+- Lát `running` khi gọi lại → từ chối (exit 2), không bắn chồng. Lát `pending` (chuỗi chết
+  sau khi ghi sổ, trước khi bắn) → gọi lại sẽ bắn đúng lát đó.
+
 ## Thread app resume được bằng headless (đo 2026-09-23)
 
 Thread do app tạo nằm **chung `~/.codex/sessions/`** với session `exec`. Đo thật:

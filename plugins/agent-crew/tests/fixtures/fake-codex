@@ -101,5 +101,26 @@ case "$FAKE_MODE" in
     printf 'phần đầu của việc\n' > "$EV"
     if [ "$FAKE_MODE" = "hang_silent" ]; then exec sleep 60; fi
     while :; do printf '{"type":"item.updated"}\n'; sleep 1; done ;;
+  chain)
+    # Một lát của chuỗi `--chain`. Evidence mỗi lát một file, nên đọc đường từ
+    # dòng hợp đồng trong brief thay vì FAKE_EVIDENCE. Lượt thứ N (đếm trong
+    # FAKE_CHAIN_DIR/count) chép FAKE_CHAIN_DIR/N.md vào evidence; có N.work thì
+    # ghi thêm một file việc trong thư mục run; có N.sleep thì ngủ sau đó.
+    # Resume thì trả đúng thread được xin, trừ lượt FAKE_CHAIN_SPLIT (thread lạ).
+    BRIEF=$(cat)
+    REL=$(printf '%s\n' "$BRIEF" | sed -n 's/.*Chỉ được ghi đúng file: \([^ ,]*\).*/\1/p' | head -1)
+    EVP="$PWD/$REL"
+    N=$(( $(cat "$FAKE_CHAIN_DIR/count" 2>/dev/null || echo 0) + 1 )); echo "$N" > "$FAKE_CHAIN_DIR/count"
+    TID="${FAKE_THREAD_ID:-0c4a1e2b-3d5f-4a6b-8c7d-9e0f1a2b3c4d}"
+    prev=""; for a in "$@"; do [ "$prev" = resume ] && TID="$a"; prev="$a"; done
+    [ -n "$FAKE_CHAIN_SPLIT" ] && [ "$N" = "$FAKE_CHAIN_SPLIT" ] && TID="5f1e2d3c-4b5a-4968-8776-655443322110"
+    printf '{"type":"thread.started","thread_id":"%s"}\n' "$TID"
+    printf '{"type":"turn.completed"}\n'
+    printf '%s\nARGV=%s\n' "$BRIEF" "$*" > "$FAKE_CHAIN_DIR/brief-$N.txt"
+    [ -f "$FAKE_CHAIN_DIR/$N.md" ] || exit 1   # không có kịch bản cho lượt này: worker chết
+    [ -f "$FAKE_CHAIN_DIR/$N.work" ] && date > "$(dirname "$EVP")/work-$N.txt"
+    cp "$FAKE_CHAIN_DIR/$N.md" "$EVP"
+    [ -f "$FAKE_CHAIN_DIR/$N.sleep" ] && exec sleep "$(cat "$FAKE_CHAIN_DIR/$N.sleep")"
+    exit 0 ;;
   *) echo "fake-codex: unknown FAKE_MODE '$FAKE_MODE'" >&2; exit 99 ;;
 esac

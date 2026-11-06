@@ -51,6 +51,7 @@ const CLI_COMMANDS = {
 function usage() {
   const rows = [
     ["run anti|codex ...", "bắn một job; có --manifest --job thì evidence/workspace/mode/model lấy từ sổ"],
+    ["run anti|codex ... --chain", "task dài: tự nối lát CONTINUE trên cùng thread [--budget 4h] [--max-slices 8]; exit 4 = checkpoint"],
     ...Object.entries(CLI_COMMANDS).map(([k, v]) => [k, v.help]),
     ...Object.entries(SCRIPT_COMMANDS).map(([k, v]) => [k, v.help]),
   ];
@@ -90,6 +91,11 @@ async function main(argv) {
     if (!file) {
       process.stderr.write(`crew run: worker phải là anti|codex, nhận "${worker ?? ""}"\n`);
       return 2;
+    }
+    // `--chain`: nhiều lát nối nhau trên một thread; mỗi lát quay lại đúng nhánh dưới.
+    if (args.includes("--chain")) {
+      const { runChain } = await import("../scripts/lib/chain-runner.mjs");
+      return runChain(worker, args, { cwd: process.cwd() });
     }
     const { expandRunArgs } = await import("../scripts/cli/run-commands.mjs");
     return runScript(file, expandRunArgs(args, { cwd: process.cwd() }));

@@ -213,6 +213,8 @@ export function paths(argv, { cwd }) {
       ["brief", join(dirname(manifestPath), `brief-${short}-${job.seq}.md`)],
       ["logs", logs],
       ...(job.worker === "antigravity" ? [["anti-watch", join(logs, `${stem}.anti-watch.jsonl`)]] : []),
+      // Sidecar của chuỗi `--chain` (một dòng mỗi lát/checkpoint), theo job gốc.
+      ["chain", join(logs, `chain-${job.chainOf ?? job.seq}.jsonl`)],
     ];
     process.stdout.write(`${rows.map(([k, v]) => `${k}\t${v}`).join("\n")}\n`);
     return 0;

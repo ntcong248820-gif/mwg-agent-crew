@@ -255,6 +255,31 @@ export function assertSurfaceFlags(options, { worker, mode, unsupported }) {
 }
 
 /** Accepts Go-style durations because that is what agy's --print-timeout takes. */
+/**
+ * Chuỗi lát (`crew run --chain`): trần 30m vẫn áp cho TỪNG lát; budget là tổng
+ * thời gian các lát của một chuỗi, ghi sổ nên chạy lại không mở đồng hồ mới.
+ * Ngưỡng ở references/cost-gate.md.
+ */
+export const DEFAULT_CHAIN_BUDGET = "4h";
+export const MAX_CHAIN_BUDGET_MS = 8 * 3_600_000;
+export const DEFAULT_CHAIN_SLICES = 8;
+export const MAX_CHAIN_SLICES = 8;
+/** Owner chốt: cứ 2 lát thì chuỗi nghỉ (exit 4) cho Claude đọc handoff. */
+export const CHAIN_CHECKPOINT_EVERY = 2;
+
+/** Budget chuỗi: cùng cú pháp `--timeout` nhưng trần 8h thay vì 30m. */
+export function parseChainBudget(value) {
+  const text = String(value ?? "").trim();
+  if (!/^(?:\d+(?:\.\d+)?[hms])+$/.test(text)) {
+    throw new GuardError(`không đọc được --budget "${value}"`, 'dùng dạng "45m", "4h", "2h30m"');
+  }
+  const unit = { h: 3_600_000, m: 60_000, s: 1000 };
+  const ms = [...text.matchAll(/(\d+(?:\.\d+)?)(h|m|s)/g)].reduce((sum, [, n, u]) => sum + Number(n) * unit[u], 0);
+  if (ms <= 0) throw new GuardError(`--budget "${value}" phải dương`);
+  if (ms > MAX_CHAIN_BUDGET_MS) throw new GuardError(`--budget "${value}" vượt trần 8h của một chuỗi`, "chẻ việc ra, hoặc chạy chuỗi mới sau khi Claude đọc handoff");
+  return ms;
+}
+
 export function parseDuration(value) {
   const text = String(value).trim();
   // Anchored on purpose. The unanchored version accepted trailing junk by

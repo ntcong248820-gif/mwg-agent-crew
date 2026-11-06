@@ -40,6 +40,11 @@ Hỏi từng lần dispatch thì mất luôn ý nghĩa tự động. Chặn bằ
 | `max_jobs_per_run` | **6** | vượt thì báo user, không tự chạy tiếp |
 | `print_timeout_default` | **15m** | mặc định của `agy` là 5m, quá ngắn cho job thật |
 | `print_timeout_max` | **30m** | job cần hơn thì chẻ nhỏ, hoặc nối job `--resume <conversationId>` (job mới tiếp thread cũ, headless) |
+| `chain_budget_default` | **4h** | `--chain` không khai `--budget`; tính bằng tổng thời gian chạy các lát trong sổ |
+| `chain_budget_max` | **8h** | một chuỗi dài hơn thì chẻ việc, hoặc chuỗi mới sau khi Claude đọc handoff |
+| `chain_slices_max` | **8** | cũng là mặc định `--max-slices` |
+| `chain_checkpoint_every` | **2** lát | exit 4, Claude đọc handoff rồi mới cho đi tiếp (owner chốt 06/11) |
+| `chain_jobs_per_run_max` | **16** | lát (`chainOf`) không tính vào `max_jobs_per_run`, nhưng run vẫn phải đọc được bằng mắt |
 | `min_job_size` | ~30s xử lý | dưới ngưỡng này thì gom job — overhead khởi động `agy` là 5.5s/lần |
 
 ## Vì sao phải dùng ngưỡng thay vì đọc quota
