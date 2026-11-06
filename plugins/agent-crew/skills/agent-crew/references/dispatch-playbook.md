@@ -253,13 +253,14 @@ sau — **không tự chạy nó**.
 
 Quá `MAX_JOBS` job thì dừng, báo user, không tự chạy tiếp. Từ 26/08 `crew add-job` tự từ chối
 job thứ 7, `claimRunSlot` tự từ chối adapter thứ 4, và `readPrompt` tự từ chối brief quá
-2048 B — nên ba ngưỡng này không còn phụ thuộc vào việc người điều phối có nhớ hay không.
+8192 B (từ 2.2.1; quá 2048 B chỉ ghi sổ + cờ `BRIEF DÀI`) — nên ba ngưỡng này không còn phụ
+thuộc vào việc người điều phối có nhớ hay không.
 
 ## Ba dòng bắt buộc: adapter tự ghép
 
 **Hai adapter tự ghép 3 dòng này vào prompt** (`appendWorkerContract`), nên quên chép tay
 không còn giết job nữa. Vẫn nên viết vào brief để bản lưu đọc lại được đủ nghĩa — adapter
-bỏ qua dòng đã có, không nhân đôi. Ba dòng ghép thêm **không tính** vào trần 2 KB: trần
+bỏ qua dòng đã có, không nhân đôi. Ba dòng ghép thêm **không tính** vào trần brief: trần
 đo phần dispatcher tự viết.
 
 Vì sao phải ép bằng code: run `crew-260909-1450` mất **cả 3 job**, kể cả job không dính
@@ -300,10 +301,22 @@ không có cách nào biết model nào hay fail ngoài đoán. Bảng bậc ở
 `routing-table.md` mục *Model* — chọn theo lượng phán đoán cần, không theo cảm giác
 nặng nhẹ. Tên model lấy từ `crew doctor`, không từ trí nhớ.
 
-## Trần 2 KB của brief
+## Trần brief: mềm 2 KB, cứng 8 KB
 
-Trần **2 KB**. Dài hơn gần như luôn có nghĩa là đang kê thuật toán hộ worker — đúng cái
-làm brief phình lên 7.2 KB hôm 24/08. Ba loại brief và ví dụ đối chiếu: mục "Brief: ba loại" ở trên.
+Nhắm **≤ 2 KB**. Dài hơn thường là đang kê thuật toán hộ worker — đúng cái làm brief phình
+lên 7.2 KB hôm 24/08. Nhưng trần cứng 2 KB làm dispatcher viết lại brief ngay lúc bắn, và
+vòng viết lại tốn token Claude hơn mấy trăm byte thừa (owner chốt 07/11). Nên từ 2.2.1:
+
+| Cỡ brief | Adapter | Sổ / collect |
+| --- | --- | --- |
+| ≤ 2048 B | chạy | ghi `briefBytes` |
+| 2049–8192 B | chạy, stderr báo | `briefBytes` + note; collect cờ `BRIEF DÀI` (không chặn, không WARN) |
+| > 8192 B | **từ chối**, job `failed` | — |
+
+Cờ `BRIEF DÀI` là để lần sau viết gọn, không phải để viết lại job đang chạy. Việc thật sự
+cần nhiều bối cảnh (spec dài, danh sách case, lời owner dài): ghi ra file trong thư mục run
+rồi brief trỏ tới — worker tự đọc file, brief giữ WHAT + NEED. Ba loại brief và ví dụ đối
+chiếu: mục "Brief: ba loại" ở trên.
 
 ## Bước 4: ghi `role` và `transport`
 

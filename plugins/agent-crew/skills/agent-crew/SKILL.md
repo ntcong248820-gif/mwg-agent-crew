@@ -6,7 +6,7 @@ when_to_use: "Trigger: giao việc, chia việc, chạy song song, nhờ Codex, 
 category: agent-ops
 keywords: [crew, dispatch, multi-agent, song-song, codex, antigravity, worker]
 metadata:
-  version: "2.2.0"
+  version: "2.2.1"
 ---
 
 # agent-crew
@@ -96,7 +96,7 @@ Vì sao, và ngoại lệ dòng `COST_GATE` được in ra: `references/nghiem-t
 ```text
 MAX_PARALLEL = 3      # code ép, adapter thứ 4 bị từ chối
 MAX_JOBS     = 6      # code ép ở add-job; lát chuỗi (chainOf) không tính, trần riêng 16 lát/run
-BRIEF_MAX    = 2 KB   # code ép ở adapter
+BRIEF        = mềm 2 KB (vẫn chạy, cờ BRIEF DÀI) / cứng 8 KB (adapter từ chối)
 ```
 
 ## Bước 0 — Có nên dispatch không?
@@ -236,7 +236,10 @@ Viết brief theo `references/worker-brief.md`, lưu đúng đường `brief` �
 suy ra được từ file + `SKILL.md`. Suy ra được thì đừng viết — worker đọc bằng token của
 nó, không phải token của Claude.
 
-Trần **2 KB**. Ba loại brief và ví dụ đối chiếu: `references/dispatch-playbook.md`.
+Nhắm **≤ 2 KB**. Quá 2 KB job vẫn chạy nhưng sổ ghi `briefBytes` + note và collect gắn cờ
+`BRIEF DÀI`; quá **8 KB** adapter mới từ chối. Việc cần nhiều bối cảnh: ghi bối cảnh ra file
+trong thư mục run, brief chỉ trỏ tới — worker tự đọc. Ba loại brief và ví dụ đối chiếu:
+`references/dispatch-playbook.md`.
 
 Đủ mục: `Tình hình`, `Cần gì`, `Bối cảnh & file`, `Skill`, `Lưu ý`, `Được ghi`,
 `Acceptance`, `Ranh giới`, 3 dòng kết. `## Lưu ý` trần 5 gạch — đây là chỗ duy nhất chỉ
