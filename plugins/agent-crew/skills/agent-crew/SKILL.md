@@ -6,7 +6,7 @@ when_to_use: "Trigger: giao việc, chia việc, chạy song song, nhờ Codex, 
 category: agent-ops
 keywords: [crew, dispatch, multi-agent, song-song, codex, antigravity, worker]
 metadata:
-  version: "2.3.2"
+  version: "2.4.0"
 ---
 
 # agent-crew
@@ -117,8 +117,12 @@ Chỉ dispatch khi có **≥2 đầu việc khác loại** (trừ hai ca miễn 
 acceptance riêng.
 Chi tiết cách phân rã: `references/dispatch-playbook.md`.
 
-Hook của plugin có thể đã chèn khối "Định tuyến crew" vào đầu lượt. Đó là **gợi ý từ so
-khớp từ khoá**, không phải lệnh: đọc yêu cầu thật rồi tự quyết theo bảng trên.
+Hook của plugin có thể đã chèn khối "Định tuyến crew" vào đầu lượt. Đó là **gợi ý**, không
+phải lệnh: đọc yêu cầu thật rồi tự quyết theo bảng trên. Repo aggressive chèn khối này ở
+**mọi** prompt là việc (không chỉ khi khớp từ khoá) và bắt câu đầu trả lời ghi đúng một dòng
+`Định tuyến: giao Codex | giao Anti | chia session con | tự làm — <lý do>`; câu hỏi hay xác
+nhận thì bỏ dòng này. Hook Stop đọc dòng đó ghi tuyến vào `.crew/logs/routing-gate.jsonl`
+(không ghi nội dung) để đo giao thừa/thiếu: quên ghi là log thành `missing`.
 
 ## Input từ một job list có sẵn — TÙY CHỌN
 

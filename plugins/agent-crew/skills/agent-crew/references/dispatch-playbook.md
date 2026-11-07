@@ -154,9 +154,15 @@ Một đầu việc, cần phán đoán. Claude tự làm.
 ## Giao việc chủ động (repo `delegate: "aggressive"`)
 
 Repo bật khoá này (`crew init --delegate aggressive`) là owner muốn đẩy việc khỏi token
-Claude. Hook chèn khối "giao việc chủ động" khi prompt khớp trigger `code`/`research` (mặc
-định ở `scripts/lib/default-routing-triggers.mjs`, repo đè được bằng `routingTriggers` cùng
-`id`). Vẫn là gợi ý: đọc yêu cầu thật rồi quyết.
+Claude. Hook chèn bước cân nhắc vào **mọi** prompt đủ dài (≥25 ký tự, không phải lệnh
+slash) — từ khoá bỏ sót việc thật ("làm cái dashboard"), Claude đọc yêu cầu thì không.
+Prompt khớp trigger `code`/`research` (mặc định ở `scripts/lib/default-routing-triggers.mjs`,
+repo đè được bằng `routingTriggers` cùng `id`) thì khối đó nói thêm "nghiêng về giao". Vẫn là
+gợi ý: đọc yêu cầu thật rồi quyết, và ghi dòng `Định tuyến: …` trước khi làm.
+
+Session con (app mở trong git worktree) cũng nhận khối này: worktree không có
+`crew.config.json` chưa commit thì hook mượn config của repo chính. Session cha **không**
+cần dặn session con "nhớ dùng crew" — dặn thêm chỉ thành lời nhắc trùng.
 
 | Giao | Không giao (tự làm, nói lý do một câu) |
 | --- | --- |

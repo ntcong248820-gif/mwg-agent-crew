@@ -86,13 +86,14 @@ function fire(prompt, { ws = WS, event = "UserPromptSubmit", env = {} } = {}) {
   t.check("...không in tên script", /anti-run|codex-run|\.mjs/.test(code.stdout), false);
   t.check("không dấu cũng khớp (sua loi)", /default-code/.test(fire("sua loi dang nhap giup tao", { ws: AGG }).stdout), true);
   t.check("research → delegate, trỏ Anti --tier standard", /default-research/.test(fire("tìm hiểu giúp tao thư viện queue nào ổn", { ws: AGG }).stdout) && /--tier standard/.test(fire("tìm hiểu giúp tao thư viện queue nào ổn", { ws: AGG }).stdout), true);
-  t.check("việc thường vẫn im", fire("giải thích giúp tao chỗ này chạy sao", { ws: AGG }).stdout.trim(), "");
+  const plainAsk = fire("giải thích giúp tao chỗ này chạy sao", { ws: AGG }).stdout;
+  t.check("việc không khớp từ khoá vẫn được cân nhắc (không còn im)", /giao việc chủ động/.test(plainAsk) && !/khớp từ khoá/.test(plainAsk), true);
   t.check("costGate vẫn làm gate im", fire("research từ khoá bằng Ahrefs", { ws: AGG }).stdout.trim(), "");
   t.check("@codex vẫn thắng nhánh delegate", /chỉ định worker trực tiếp/.test(fire("@codex refactor module parser", { ws: AGG }).stdout), true);
   t.check("repo default: cùng prompt → im (không có trigger code)", fire("refactor module parser cho gọn", { ws: repo("gate-def-", { costGate: COST_GATE }) }).stdout.trim(), "");
   t.check("repo default có trigger: 1 việc vẫn chỉ đề xuất", /một nhóm việc có rule/.test(fire("chèn link nội bộ cho 40 bài giúp tao").stdout), true);
   const own = repo("gate-own-", { delegate: "aggressive", routingTriggers: [{ id: "default-code", kind: "code", pattern: "đập đi xây lại" }] });
-  t.check("trigger repo cùng id đè mặc định: từ mặc định thôi khớp", fire("refactor module parser cho gọn", { ws: own }).stdout.trim(), "");
+  t.check("trigger repo cùng id đè mặc định: từ mặc định thôi khớp", /default-code/.test(fire("refactor module parser cho gọn", { ws: own }).stdout), false);
   t.check("...từ của repo thì khớp", /default-code/.test(fire("đập đi xây lại module này", { ws: own }).stdout), true);
   t.check("...mặc định khác id vẫn còn", /default-research/.test(fire("so sánh hai thư viện này", { ws: own }).stdout), true);
   t.check("delegate lạ bị từ chối lúc nạp", msg(() => loadCrewConfig(repo("gate-bad-", { delegate: "max" }))).includes("delegate phải là"), true);
