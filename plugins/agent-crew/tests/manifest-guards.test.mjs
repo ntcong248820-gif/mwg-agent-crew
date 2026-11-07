@@ -216,7 +216,12 @@ const threw = (fn) => { try { fn(); return null; } catch (err) { return err.mess
   t.check("a spelled-out unit is refused", /cannot parse/.test(threw(() => parseDuration("8minutes")) ?? ""), true);
   t.check("junk after a valid duration is refused", /cannot parse/.test(threw(() => parseDuration("15m; rm -rf /")) ?? ""), true);
   t.check("surrounding whitespace is still fine", parseDuration("  15m "), 900_000);
-  t.check("the ceiling still applies", /ceiling/.test(threw(() => parseDuration("31m")) ?? ""), true);
+  t.check("the ceiling still applies", /vượt trần 30m/.test(threw(() => parseDuration("31m")) ?? ""), true);
+  // Vượt trần thì chỉ sang --chain với budget đúng thời lượng vừa xin, không chỉ bảo "chẻ job".
+  t.check("over the ceiling points at --chain", /--chain --timeout 30m --budget 40m/.test(threw(() => parseDuration("40m")) ?? ""), true);
+  t.check("...keeps the requested spelling", /--budget 1h30m/.test(threw(() => parseDuration(" 1h30m ")) ?? ""), true);
+  t.check("past the 8h chain budget, --chain is not offered", /--chain --timeout/.test(threw(() => parseDuration("9h")) ?? ""), false);
+  t.check("...and says to split instead", /trần 8h/.test(threw(() => parseDuration("9h")) ?? ""), true);
 }
 
 // --- the run-shape ceilings are checked by code, not by the reader ----------

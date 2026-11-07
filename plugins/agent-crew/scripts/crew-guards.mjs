@@ -302,13 +302,22 @@ export function parseDuration(value) {
   const unit = { h: 3_600_000, m: 60_000, s: 1000 };
   const ms = matches.reduce((sum, [, n, u]) => sum + Number(n) * unit[u], 0);
   if (ms <= 0) throw new GuardError(`duration "${value}" is not positive`);
-  if (ms > MAX_TIMEOUT_MS) {
-    throw new GuardError(
-      `duration "${value}" exceeds the crew ceiling of 30m`,
-      "split the job instead of raising the timeout (see cost-gate.md)",
-    );
-  }
+  if (ms > MAX_TIMEOUT_MS) throw new GuardError(`thời lượng "${value}" vượt trần 30m của một job`, ceilingHint(text, ms));
   return ms;
+}
+
+/**
+ * Gợi ý khi `--timeout` vượt trần. Trước đây chỉ bảo "chẻ job", nên dispatcher
+ * hạ về 30m rồi bắn lại y nguyên: việc thật sự cần 40m bị cắt giữa chừng.
+ * Đường đúng cho việc dài là `--chain`, nên in sẵn lệnh với budget bằng đúng
+ * thời lượng vừa xin.
+ */
+function ceilingHint(text, ms) {
+  if (ms > MAX_CHAIN_BUDGET_MS) {
+    return "quá cả trần 8h của một chuỗi: chẻ việc thành nhiều job, hoặc nhiều chuỗi nối nhau sau khi Claude đọc handoff";
+  }
+  return `việc cần hơn 30m thì đừng hạ --timeout: bắn bằng chuỗi lát, mỗi lát ≤30m, tự nối trên cùng thread\n`
+    + `  → thay bằng: --chain --timeout 30m --budget ${text}   (xem cost-gate.md)`;
 }
 
 /**
