@@ -36,7 +36,8 @@ const gitRepo = (prefix) => {
   t.check("run worker lạ → exit 2", crew(["run", "gemini"]).code, 2);
   // Exit code của script phải đi nguyên qua cửa vào, không bị nuốt thành 0.
   const direct = spawnSync(process.execPath, [join(MODULE_ROOT, "scripts", "anti-run.mjs"), "--bogus-flag", "x"], { encoding: "utf8" });
-  const via = crew(["run", "anti", "--bogus-flag", "x"]);
+  // Tắt cổng quota: không thì test hỏi quota của agy thật trên máy.
+  const via = crew(["run", "anti", "--bogus-flag", "x"], { env: { ...process.env, CREW_QUOTA_CHECK: "off" } });
   t.check("run anti cờ lạ: exit giống gọi thẳng adapter", via.code, direct.status);
   t.check("...và khác 0", via.code !== 0, true);
 }

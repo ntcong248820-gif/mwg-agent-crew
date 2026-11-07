@@ -4,6 +4,17 @@ File này **không nạp** khi vận hành. Nó giữ các phép đo đã sinh r
 `routing-table.md` và `references/` của skill điều phối, để lần sau khỏi đo lại hay
 "phát hiện" lại. Luật thì nằm ở các file đó, không ở đây.
 
+## Đọc quota worker không tốn token (đo 2026-11-07)
+
+Codex 0.164: `codex app-server` nhận JSON-RPC `initialize` rồi `account/rateLimits/read`,
+trả trong < 1s `usedPercent` của cửa sổ 300 phút và 10080 phút kèm `resetsAt` (giây epoch),
+`rateLimitReachedType`, `credits`, `rateLimitResetCredits` (số lượt reset miễn phí). Không mở
+thread. Cùng số đó nằm trong event `token_count` của `~/.codex/sessions/**.jsonl` nhưng chỉ
+cập nhật khi có phiên chạy. Anti: `agy -p /quota --output-format json` ~5s, `usage` toàn 0,
+`command.data.groups[]` = nhóm "Gemini Models" và "Claude and GPT models", mỗi nhóm cửa sổ
+`5h` và `weekly` với `remaining_fraction` + `reset_time`. Lần đo: Codex 5h đã dùng 86%,
+Anti Gemini tuần còn 49%. Luật nằm ở `scripts/lib/worker-quota-verdict.mjs`.
+
 ## Hai hồ sơ gws trên một máy: crew mint sai hồ sơ (đo 2026-11-07)
 
 Máy có `~/.config/gws` và `~/.config/gws-personal`, hai tài khoản Google khác nhau. Job
