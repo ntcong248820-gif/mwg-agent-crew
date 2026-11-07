@@ -25,10 +25,13 @@ const IN_3H = Math.floor(NOW.getTime() / 1000) + 3 * 3600;
 const IN_7D = Math.floor(NOW.getTime() / 1000) + 7 * 86400;
 const AGO = Math.floor(NOW.getTime() / 1000) - 60;
 
-const codexLimits = (used5h, usedWeek, extra = {}) => ({
+// Phép phán thuần dùng NOW cố định; dữ liệu đưa qua `crew run` thật thì giờ hồi
+// phải tính từ đồng hồ thật, không thì tới quá NOW + 3h là "đã hồi" và cổng cho bắn.
+const LIVE = Math.floor(Date.now() / 1000);
+const codexLimits = (used5h, usedWeek, extra = {}, base = NOW.getTime() / 1000) => ({
   limitId: "codex", limitName: null, normalModelSlug: null,
-  primary: { usedPercent: used5h, windowDurationMins: 300, resetsAt: IN_3H },
-  secondary: { usedPercent: usedWeek, windowDurationMins: 10080, resetsAt: IN_7D },
+  primary: { usedPercent: used5h, windowDurationMins: 300, resetsAt: Math.floor(base) + 3 * 3600 },
+  secondary: { usedPercent: usedWeek, windowDurationMins: 10080, resetsAt: Math.floor(base) + 7 * 86400 },
   credits: { hasCredits: false, unlimited: false, balance: null },
   spendControlReached: false, rateLimitReachedType: null, ...extra,
 });
@@ -36,7 +39,10 @@ const codexResult = (rl, more = {}) => ({
   ordinaryUsageAllowed: true, rateLimits: rl, rateLimitsByLimitId: { codex: rl },
   rateLimitResetCredits: { availableCount: 2, credits: [] }, ...more,
 });
-const agyJson = (gemini5h, geminiWeek, claude5h = 1, claudeWeek = 0.98) => ({
+const agyJson = (gemini5h, geminiWeek, claude5h = 1, claudeWeek = 0.98, base = NOW.getTime() / 1000) => {
+  const IN_3H = Math.floor(base) + 3 * 3600;
+  const IN_7D = Math.floor(base) + 7 * 86400;
+  return {
   conversation_id: "", status: "SUCCESS", usage: { total_tokens: 0 },
   response: "",
   command: {
@@ -54,7 +60,8 @@ const agyJson = (gemini5h, geminiWeek, claude5h = 1, claudeWeek = 0.98) => ({
       ],
     },
   },
-});
+  };
+};
 
 // --- đọc hình dữ liệu --------------------------------------------------------
 
@@ -146,8 +153,8 @@ function crewRun(s, worker, { extra = [], env = {} } = {}) {
   return { exit: p.status, err: p.stderr ?? "" };
 }
 const status = (s) => readManifest(s.manifestPath).jobs[0].status;
-const EMPTY_CODEX = JSON.stringify(codexResult(codexLimits(100, 10)));
-const FULL_CODEX = JSON.stringify(codexResult(codexLimits(10, 10)));
+const EMPTY_CODEX = JSON.stringify(codexResult(codexLimits(100, 10, {}, LIVE)));
+const FULL_CODEX = JSON.stringify(codexResult(codexLimits(10, 10, {}, LIVE)));
 
 {
   const s = setup("empty");
@@ -186,7 +193,7 @@ const FULL_CODEX = JSON.stringify(codexResult(codexLimits(10, 10)));
 }
 {
   const s = setup("anti-empty", "antigravity");
-  const r = crewRun(s, "anti", { env: { FAKE_AGY_QUOTA: JSON.stringify(agyJson(0, 0.5)) } });
+  const r = crewRun(s, "anti", { env: { FAKE_AGY_QUOTA: JSON.stringify(agyJson(0, 0.5, 1, 0.98, LIVE)) } });
   t.check("anti job Gemini, nhóm Gemini cạn → exit 5", r.exit, QUOTA_EXIT);
   t.check("...model lấy từ sổ", /Gemini Models/.test(r.err) && !/không rõ model/.test(r.err), true);
   t.check("...job vẫn pending", status(s), "pending");
