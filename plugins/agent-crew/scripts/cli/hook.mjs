@@ -20,8 +20,10 @@ import { CONFIG_NAME } from "../lib/crew-layout.mjs";
 import { isWorkerRole } from "../lib/crew-role.mjs";
 import { classify, render } from "../lib/routing-gate.mjs";
 import { workspaceRoot } from "./run-commands.mjs";
+import { upgradePinnedShim } from "./crew-shim.mjs";
 
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "..");
+const CREW_BIN = join(SCRIPTS, "..", "bin", "crew.mjs");
 const LOG_MAX_BYTES = 256 * 1024;
 
 function readStdin() {
@@ -88,7 +90,12 @@ function stateScript(file, raw, ws) {
 }
 
 const EVENTS = {
-  "session-start": (raw, payload, ws) => stateScript("agent-state-read.mjs", raw, ws),
+  "session-start": (raw, payload, ws) => {
+    // Shim cũ ghim vào thư mục cache của một version trước: đổi sang kiểu theo bản
+    // đang cài, để `/plugin update` xong là lệnh `crew` lên theo. Im lặng, không throw.
+    if (!isWorkerRole()) upgradePinnedShim({ crewBin: CREW_BIN });
+    stateScript("agent-state-read.mjs", raw, ws);
+  },
   stop: (raw, payload, ws) => stateScript("agent-state-write.mjs", raw, ws),
   prompt: (raw, payload, ws) => promptGate(payload, ws),
 };

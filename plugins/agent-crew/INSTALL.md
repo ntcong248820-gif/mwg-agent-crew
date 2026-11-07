@@ -53,8 +53,39 @@ node <thư mục plugin>/bin/crew.mjs install    # ghi ~/.local/bin/crew
 crew doctor
 ```
 
+`<thư mục plugin>` của bản cài từ marketplace là
+`~/.claude/plugins/cache/agent-crew-marketplace/agent-crew/<version>`.
+
 Shim gọi node bằng đường ổn định và tự đưa thư mục node lên đầu `PATH`, nên chạy được cả
 khi app GUI gọi nó với `PATH=/usr/bin:/bin`. `~/.local/bin` phải nằm trong `PATH` của shell.
+
+Shim có hai kiểu, tự chọn theo chỗ chạy `crew install`:
+
+| Chạy `crew install` từ | Shim | Khi plugin lên bản mới |
+| --- | --- | --- |
+| Cache của plugin (cài từ marketplace) | **Theo** bản đang cài: mỗi lần chạy đọc `~/.claude/plugins/installed_plugins.json` | Tự lên theo, không cần cài lại |
+| Bản clone của repo (người sửa crew) | **Ghim** vào `bin/crew.mjs` của bản clone | Lên theo source; `git pull` là có |
+
+`crew doctor` dòng `shim` nói shim đang là kiểu nào.
+
+## 3b. Cập nhật lên bản mới
+
+Trong terminal:
+
+```bash
+claude plugin marketplace update agent-crew-marketplace
+claude plugin update agent-crew@agent-crew-marketplace
+```
+
+(hoặc `/plugin` trong Claude Code → chọn plugin → cập nhật). Rồi mở phiên Claude mới: phiên
+đang mở vẫn dùng skill và hook của bản cũ.
+
+- **Lệnh `crew`** lên theo không cần làm gì, nếu shim là kiểu theo. Shim cài trước 2.3.1 là
+  kiểu ghim vào thư mục cache có số version; phiên Claude đầu tiên sau khi lên 2.3.1 trở đi,
+  hook SessionStart tự đổi nó sang kiểu theo. Muốn đổi ngay thì chạy lại `crew install` từ
+  thư mục bản mới.
+- **Marketplace trỏ vào bản clone** (`/plugin marketplace add ~/Documents/agent-crew`): lệnh
+  update chép từ thư mục đó, nên `git pull` trong bản clone trước.
 
 ## 4. Hook: im lặng ở repo chưa bật crew
 

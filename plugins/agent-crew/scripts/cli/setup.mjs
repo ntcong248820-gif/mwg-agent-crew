@@ -8,7 +8,7 @@
  * Một lệnh trả lời "máy này chạy được gì" rẻ hơn dạy mọi đường lỗi giải thích.
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,11 +16,12 @@ import { DELEGATE_MODES, loadCrewConfig } from "../lib/crew-config.mjs";
 import { TIERS, TierError, codexConfigModel, liveCodexModels, parseAgyModels, resolveTier } from "../lib/model-tiers.mjs";
 import { CONFIG_NAME, DEFAULT_LAYOUT, loadLayout } from "../lib/crew-layout.mjs";
 import { CliError, parseFlags, workspaceRoot } from "./run-commands.mjs";
+import { SHIM_MARK, pluginInstallOf, readShim, shimPath, shimScript, stableNode } from "./crew-shim.mjs";
+
+export { shimPath, shimScript, stableNode };
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const CREW_BIN = join(PLUGIN_ROOT, "bin", "crew.mjs");
-/** Dòng nhận diện shim do `crew install` sinh — shim không có dòng này là của người khác, không ghi đè. */
-const SHIM_MARK = "# crew-shim: sinh bởi `crew install`";
 
 const run = (cmd, args, timeout = 15_000) => {
   const p = spawnSync(cmd, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
@@ -148,12 +149,19 @@ export async function doctor(argv, { cwd }) {
 
   const shim = shimPath();
   const onPath = (process.env.PATH ?? "").split(delimiter).includes(dirname(shim));
-  if (!existsSync(shim)) say("shim", `chưa cài (${shim}) — chạy: node "${CREW_BIN}" install`);
-  else {
-    const body = readFileSync(shim, "utf8");
-    const mine = body.includes(SHIM_MARK) && body.includes(CREW_BIN);
-    say("shim", `${shim}${mine ? " → bản này" : " — trỏ sang bản KHÁC hoặc không phải của crew"}${onPath ? "" : `; ${dirname(shim)} KHÔNG có trong PATH`}`);
-  }
+  const st = readShim(shim);
+  const reinstall = `chạy: node "${CREW_BIN}" install`;
+  const where = {
+    none: `chưa cài — ${reinstall}`,
+    foreign: "không phải shim của crew (crew install không ghi đè; --force on nếu chắc)",
+    follow: st.key === pluginInstallOf(CREW_BIN)?.key
+      ? `theo bản plugin đang cài (${st.key}) — /plugin update là lệnh crew lên theo`
+      : `theo plugin ${st.key}, không phải bản đang chạy — ${reinstall}`,
+    pinned: st.target === CREW_BIN
+      ? `ghim vào bản này${pluginInstallOf(CREW_BIN) ? " (cache có số version: /plugin update sẽ không kéo theo — " + reinstall + ")" : ""}`
+      : `ghim vào bản KHÁC (${st.target ?? "?"}) — ${reinstall}`,
+  }[st.kind];
+  say("shim", `${shim}: ${where}${onPath ? "" : `; ${dirname(shim)} KHÔNG có trong PATH`}`);
 
   process.stdout.write(`crew doctor\n${lines.join("\n")}\n`);
   if (problems.length) {
@@ -237,46 +245,6 @@ export function init(argv, { cwd }) {
   return 0;
 }
 
-export const shimPath = () => join(homedir(), ".local", "bin", "crew");
-
-/**
- * Shim gọi node bằng đường tuyệt đối lấy lúc cài, và đưa thư mục node lên đầu
- * PATH: app GUI chỉ cho PATH `/usr/bin:/bin:/usr/sbin:/sbin`, nơi không có node
- * (bài học devtools hub 18/10: 111/111 lần bật chết code 127). Nó trỏ vào bản
- * nguồn đang chạy lệnh này, không vào cache của plugin: đường cache đổi theo
- * version, còn hook của Codex/Antigravity cần một đường đứng yên.
- */
-/**
- * Đường node ổn định cho shim. `process.execPath` của Homebrew là đường có số
- * version (`.../Cellar/node/25.2.1/bin/node`): ghi cứng nó thì `brew upgrade
- * node` xong là shim gãy, đúng lúc PATH tối thiểu không còn chỗ nào để dò lại.
- * Lấy symlink ổn định nào trỏ về cùng file node đang chạy.
- */
-export function stableNode(execPath = process.execPath, envPath = process.env.PATH ?? "") {
-  const real = (p) => { try { return realpathSync(p); } catch { return null; } };
-  const target = real(execPath);
-  const candidates = [
-    ...envPath.split(delimiter).filter(Boolean).map((d) => join(d, "node")),
-    "/opt/homebrew/bin/node",
-    "/usr/local/bin/node",
-  ];
-  return candidates.find((c) => !c.includes("/Cellar/") && existsSync(c) && real(c) === target) ?? execPath;
-}
-
-export function shimScript(nodeBin = stableNode(), crewBin = CREW_BIN) {
-  const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
-  return [
-    "#!/bin/sh",
-    SHIM_MARK,
-    `NODE=${q(nodeBin)}`,
-    '[ -x "$NODE" ] || for c in /opt/homebrew/bin/node /usr/local/bin/node "$(command -v node)"; do [ -x "$c" ] && NODE="$c" && break; done',
-    '[ -x "$NODE" ] || { echo "crew: không tìm thấy node" >&2; exit 127; }',
-    'PATH="$(dirname "$NODE"):$PATH"; export PATH',
-    `exec "$NODE" ${q(crewBin)} "$@"`,
-    "",
-  ].join("\n");
-}
-
 export function install(argv) {
   let flags;
   try {
@@ -292,10 +260,11 @@ export function install(argv) {
     return 1;
   }
   mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, shimScript(), { mode: 0o755 });
+  writeFileSync(target, shimScript(stableNode(), CREW_BIN), { mode: 0o755 });
   chmodSync(target, 0o755);
   const onPath = (process.env.PATH ?? "").split(delimiter).includes(dirname(target));
-  process.stdout.write(`${JSON.stringify({ shim: target, node: stableNode(), crew: CREW_BIN, onPath }, null, 2)}\n`);
+  const follows = pluginInstallOf(CREW_BIN)?.key ?? null;
+  process.stdout.write(`${JSON.stringify({ shim: target, node: stableNode(), crew: CREW_BIN, follows, onPath }, null, 2)}\n`);
   if (!onPath) process.stdout.write(`\n${dirname(target)} chưa có trong PATH: thêm vào shell profile để gõ được \`crew\`\n`);
   return 0;
 }
