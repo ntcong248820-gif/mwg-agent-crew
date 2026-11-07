@@ -16,6 +16,7 @@ Một cửa vào cho mọi script. Cài shim một lần (ghi `~/.local/bin/crew
 ```bash
 node plugins/agent-crew/bin/crew.mjs install
 crew doctor          # node, git, layout, agy/codex, tên model còn sống, bậc --tier, delegate
+crew quota           # quota còn lại của Codex/Anti (5h, tuần, giờ hồi), không tốn token
 crew init            # .crew/ + .gitignore cho log thô; --state on để bật file trạng thái phiên;
                      # --delegate aggressive để gate gợi ý giao việc code/research chủ động
 ```
@@ -40,6 +41,11 @@ Việc dài hơn trần 30m của một job: `crew run codex --manifest "$MP" --
 <brief> --chain --timeout 30m --budget 4h` — lát nào ra `Status: CONTINUE` (có `## Handoff`)
 thì crew tự nối lát kế trên cùng thread; exit 4 = checkpoint mỗi 2 lát, đọc handoff rồi gọi
 lại đúng lệnh. Codex chỉ chạy headless (từ 2.0.4); transport `app` chỉ còn cho Antigravity.
+
+`crew run` tự đọc quota của đúng worker, đúng nhóm model của job trước khi gọi adapter: nhóm đó
+cạn (dưới 1%, hoặc CLI tự báo chạm trần) → exit 5, không bắn, sổ không đổi; dưới 10% hoặc
+không đọc được → cảnh báo rồi vẫn bắn. Tắt bằng `--quota-check off` (một lệnh) hoặc
+`CREW_QUOTA_CHECK=off`.
 
 `crew --help` liệt kê mọi lệnh. Lệnh nào đã có script thì chạy đúng script đó ở tiến
 trình con, giữ nguyên tham số và exit code; cờ lạ vẫn bị script từ chối.
@@ -260,6 +266,7 @@ quyết định của dispatcher, nằm trong brief để audit.
 | `scripts/lib/holds.mjs` | Logic hold: tạo hold cổng chi phí, đọc tên API từ dòng `COST_GATE`, trả lời/hoãn/cover, vân tay `holds` mà adapter so ở mọi đường thoát, và verdict `WAIVED`/`COVERED`/`DEFERRED`. |
 | `scripts/lib/crew-digest.mjs` | Bảng "Crew còn dở" (tối đa 15 dòng) cho đầu phiên Claude: hold đang chờ, job kẹt, run chưa nghiệm thu. Đọc thẳng manifest, không chép text evidence. |
 | `scripts/lib/chain-runner.mjs` | `crew run anti\|codex ... --chain`: nối lát `CONTINUE` trên cùng thread (`--resume`), mỗi lát một job `chainOf` trong sổ, brief lát kế do crew viết theo mẫu cố định. Dừng ở lát không còn `continue`, kiểm handoff không đạt, thread bị tách, hết `--budget` (4h, trần 8h) / `--max-slices` (8) → exit 3; mỗi 2 lát → exit 4 (checkpoint). Bộ đếm nằm trên job gốc trong sổ; SIGTERM chuyển xuống lát đang chạy. Sidecar `chain-<N>.jsonl` trong thư mục log. |
+| `scripts/lib/worker-quota-readers.mjs` · `scripts/lib/worker-quota-verdict.mjs` · `scripts/cli/quota-command.mjs` | Quota còn lại không tốn token: Codex qua `codex app-server` (`account/rateLimits/read`, < 1s), Anti qua `agy -p /quota --output-format json` (~5s). Phán theo nhóm model của job (Anti tách Gemini và Claude/GPT); qua giờ hồi coi như đầy; Codex có credits thì chỉ cảnh báo. Không đọc được thì không chặn. `crew quota` in bảng; `crew run` dùng làm cổng (exit 5). |
 | `scripts/lib/handoff-check.mjs` · `scripts/lib/chain-slice-progress.mjs` | Kiểm cơ học handoff trước khi nối lát: đủ 4 mục, `### Đang dở` khác lát trước, không nhắc dispatch/quyền/control plane (thuần); và lát có đổi file ngoài evidence không (`touchedFiles`, rồi mtime trong thư mục run + `filesMayModify`). |
 | `scripts/lib/progress-watch.mjs` | Hai hàm thuần đo độ im của job Anti app: vân tay `byStatus` của conversation là tín hiệu chính, mtime file riêng của job chỉ được hoãn báo động. |
 | `scripts/crew-scope.mjs` | Quy file thay đổi trong working tree về từng job: ưu tiên `touchedFiles` runtime tự khai, còn lại theo mtime nằm trong khoảng job đó chạy. Tách khỏi collect vì đây là logic quy trách nhiệm, không phải logic phán quyết. |

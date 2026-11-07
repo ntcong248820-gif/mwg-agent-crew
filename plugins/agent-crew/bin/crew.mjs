@@ -43,6 +43,7 @@ const CLI_COMMANDS = {
   paths: { load: () => import("../scripts/cli/run-commands.mjs"), fn: "paths", help: "đường của một job: <manifest> --job N → evidence, brief, logs, anti-watch" },
   digest: { load: () => import("../scripts/cli/run-commands.mjs"), fn: "digest", help: "bảng crew còn dở của workspace này" },
   doctor: { load: () => import("../scripts/cli/setup.mjs"), fn: "doctor", help: "máy này chạy được gì: node, git, config, agy, codex, model còn sống" },
+  quota: { load: () => import("../scripts/cli/quota-command.mjs"), fn: "quota", help: "quota còn lại của Codex/Anti, không tốn token [--worker anti|codex]" },
   init: { load: () => import("../scripts/cli/setup.mjs"), fn: "init", help: "chuẩn bị .crew/ trong repo này" },
   install: { load: () => import("../scripts/cli/setup.mjs"), fn: "install", help: "ghi shim ~/.local/bin/crew trỏ vào bản này" },
   hook: { load: () => import("../scripts/cli/hook.mjs"), fn: "hook", help: "cho hook plugin: session-start | stop | prompt (payload qua stdin, luôn exit 0)" },
@@ -50,7 +51,7 @@ const CLI_COMMANDS = {
 
 function usage() {
   const rows = [
-    ["run anti|codex ...", "bắn một job; có --manifest --job thì evidence/workspace/mode/model lấy từ sổ"],
+    ["run anti|codex ...", "bắn một job; có --manifest --job thì evidence/workspace/mode/model lấy từ sổ; quota cạn → exit 5, không bắn [--quota-check off]"],
     ["run anti|codex ... --chain", "task dài: tự nối lát CONTINUE trên cùng thread [--budget 4h] [--max-slices 8]; exit 4 = checkpoint"],
     ...Object.entries(CLI_COMMANDS).map(([k, v]) => [k, v.help]),
     ...Object.entries(SCRIPT_COMMANDS).map(([k, v]) => [k, v.help]),
@@ -98,7 +99,13 @@ async function main(argv) {
       return runChain(worker, args, { cwd: process.cwd() });
     }
     const { expandRunArgs } = await import("../scripts/cli/run-commands.mjs");
-    return runScript(file, expandRunArgs(args, { cwd: process.cwd() }));
+    // Cổng quota trước adapter: cạn thì exit 5, sổ không đổi. Lát của --chain đi
+    // qua đúng nhánh này nên mỗi lát cũng được kiểm.
+    const { quotaGate } = await import("../scripts/cli/quota-command.mjs");
+    const expanded = expandRunArgs(args, { cwd: process.cwd() });
+    const gate = await quotaGate(worker, expanded, { cwd: process.cwd() });
+    if (gate.refuse !== null) return gate.refuse;
+    return runScript(file, gate.argv);
   }
   if (SCRIPT_COMMANDS[cmd]) return runScript(SCRIPT_COMMANDS[cmd].file, rest);
   if (CLI_COMMANDS[cmd]) {

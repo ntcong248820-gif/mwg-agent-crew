@@ -20,6 +20,13 @@ if [ "$1" = "models" ]; then
   done
   exit 0
 fi
+# `agy -p /quota --output-format json`: in FAKE_AGY_QUOTA; không khai thì chết.
+# Phải đứng trước nhánh FAKE_MODE: không thì "worker" giả ghi evidence ngay lúc
+# crew mới hỏi quota.
+if [ "$1" = "-p" ] && [ "$2" = "/quota" ]; then
+  [ -n "$FAKE_AGY_QUOTA" ] || { echo "agy: not signed in" >&2; exit 1; }
+  printf '%s\n' "$FAKE_AGY_QUOTA"; exit 0
+fi
 EV="$FAKE_EVIDENCE"
 CONV="${FAKE_CONVERSATION_ID:-conv-fake-0001}"
 case "$FAKE_MODE" in

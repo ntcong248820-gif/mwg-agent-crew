@@ -28,6 +28,7 @@ import {
 import { layoutOf } from "./crew-layout.mjs";
 import { checkHandoff } from "./handoff-check.mjs";
 import { sliceChangedFiles } from "./chain-slice-progress.mjs";
+import { QUOTA_EXIT } from "./worker-quota-verdict.mjs";
 
 const CREW_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "crew.mjs");
 const SHORT = { antigravity: "anti", codex: "codex" };
@@ -181,6 +182,8 @@ export async function runChain(workerArg, argv, { cwd }) {
         log({ slice: k, seq: ran.seq, status: ran.status, conversationId: ran.conversationId ?? null, elapsedSec: Math.round(spanMs(ran) / 1000), usage: ran.usage ?? null, exit: code });
         record({ chainSlices: slices.length, chainElapsedMs: chainState(manifestPath, rootSeq).elapsedMs });
         if (signalled) return stop(1, signalled.toLowerCase());
+        // Cổng quota của `crew run` từ chối trước adapter: lát chưa bắn, vẫn pending.
+        if (code === QUOTA_EXIT && ran.status === "pending") return stop(QUOTA_EXIT, `worker cạn quota — lát ${k} chưa bắn`);
         if (ran.status === "pending" || ran.status === "running") return stop(code || 1, `lát ${k} không ghi kết quả vào sổ (exit ${code})`);
         // Trước trạng thái: Codex chấm lát chạy nhầm thread là failed, nhưng lý do
         // người đọc cần là thread bị tách, không phải "worker hỏng".
