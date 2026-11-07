@@ -7,18 +7,20 @@
  *
  * Plugin cài cấp máy nên hook bắn ở MỌI repo. Mỗi nhánh tự im khi workspace
  * chưa bật crew: state chỉ ghi khi thư mục state đã có, bảng crew chỉ in khi có
- * run, gate chỉ nói khi có `crew.config.json` hoặc `.crew/`.
+ * run, gate chỉ nói khi có `crew.config.json` hoặc `.crew/` — ở chính workspace,
+ * hoặc ở repo chính khi workspace là một git worktree (session con).
  *
  * Luôn exit 0. Hook là tiện ích; nó không có quyền chặn lượt của người dùng.
  */
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCrewConfig } from "../lib/crew-config.mjs";
 import { CONFIG_NAME } from "../lib/crew-layout.mjs";
 import { isWorkerRole } from "../lib/crew-role.mjs";
 import { classify, render } from "../lib/routing-gate.mjs";
+import { lastTurnDecision, markPending, routesOf, takePending } from "../lib/routing-decision-log.mjs";
 import { workspaceRoot } from "./run-commands.mjs";
 import { upgradePinnedShim } from "./crew-shim.mjs";
 
@@ -51,6 +53,27 @@ function workspaceOf(payload, cwd) {
 
 export const optedIn = (ws) => existsSync(join(ws, CONFIG_NAME)) || existsSync(join(ws, ".crew"));
 
+/** Thư mục repo chính của một git worktree; null khi không phải worktree hay repo bare. */
+function mainWorktree(ws) {
+  const p = spawnSync("git", ["-C", ws, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", timeout: 400, stdio: ["ignore", "pipe", "ignore"] });
+  const common = p.status === 0 ? p.stdout.trim() : "";
+  if (!common || basename(common) !== ".git") return null;
+  const main = dirname(common);
+  return main === ws ? null : main;
+}
+
+/**
+ * Workspace mang config crew cho phiên này. Session con của app thường chạy
+ * trong một worktree mới, nơi chỉ có file đã commit; `crew init` ghi
+ * `crew.config.json` mà không commit, nên worktree "quên" repo đã bật crew.
+ * Workspace chưa bật thì mượn config của repo chính.
+ */
+export function crewWorkspace(ws) {
+  if (optedIn(ws)) return ws;
+  const main = mainWorktree(ws);
+  return main && optedIn(main) ? main : ws;
+}
+
 function gitBranch(ws) {
   const p = spawnSync("git", ["-C", ws, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 400, stdio: ["ignore", "pipe", "ignore"] });
   return p.status === 0 ? p.stdout.trim() : null;
@@ -67,18 +90,52 @@ function logFire(path, ws, decision, hits) {
   } catch { /* log hỏng không được ảnh hưởng lượt của người dùng */ }
 }
 
-function promptGate(payload, ws) {
+/**
+ * Nơi ghi log gate. Biến môi trường rẽ log cho bộ test: test ghi vào log thật thì
+ * log đó hết còn là nguồn để chấm gate (21/09 một lần test crash bỏ lại 12 dòng
+ * giả). Repo aggressive không khai `routingLog` vẫn có log mặc định trong
+ * `.crew/logs/` (đã gitignore), vì chế độ đó cần đo được giao thừa hay thiếu.
+ */
+function gateLogPath(config, ws) {
+  if (process.env.CREW_GATE_LOG) return isAbsolute(process.env.CREW_GATE_LOG) ? process.env.CREW_GATE_LOG : null;
+  if (config.routingLog) return join(ws, config.routingLog);
+  if (config.delegate === "aggressive" && config.layout.evidenceRoot === ".crew") return join(ws, ".crew", "logs", "routing-gate.jsonl");
+  return null;
+}
+
+function promptGate(payload, start) {
   if ((payload.hook_event_name ?? "UserPromptSubmit") !== "UserPromptSubmit") return;
   // Worker không điều phối: gợi ý chia việc cho nó là mời nó dispatch tiếp.
-  if (isWorkerRole() || !optedIn(ws)) return;
+  if (isWorkerRole()) return;
+  const ws = crewWorkspace(start);
+  if (!optedIn(ws)) return;
   const config = loadCrewConfig(ws);
   const { branch, hits } = classify(payload.prompt ?? payload.user_prompt ?? "", config);
   if (branch === "none") return;
-  // Biến môi trường rẽ log cho bộ test: test ghi vào log thật thì log đó hết
-  // còn là nguồn để chấm gate (21/09 một lần test crash bỏ lại 12 dòng giả).
-  const logPath = process.env.CREW_GATE_LOG || (config.routingLog && join(ws, config.routingLog));
-  if (logPath && isAbsolute(logPath)) logFire(logPath, ws, branch, hits);
+  const logPath = gateLogPath(config, ws);
+  if (logPath) {
+    logFire(logPath, ws, branch, hits);
+    if (branch === "delegate" || branch === "consider") markPending(logPath, payload.session_id, branch);
+  }
   process.stdout.write(render(branch, hits));
+}
+
+/**
+ * Hook Stop: lượt vừa xong có gate bắt ghi dòng quyết định → đọc nó từ transcript
+ * và ghi tuyến vào cùng log. Lượt gate không bắn thì không ghi gì.
+ */
+function logTurnDecision(payload, start) {
+  if (isWorkerRole()) return;
+  const ws = crewWorkspace(start);
+  if (!optedIn(ws)) return;
+  const logPath = gateLogPath(loadCrewConfig(ws), ws);
+  if (!logPath) return;
+  const gate = takePending(logPath, payload.session_id);
+  if (!gate) return;
+  const line = typeof payload.transcript_path === "string" ? lastTurnDecision(payload.transcript_path) : null;
+  try {
+    appendFileSync(logPath, `${JSON.stringify({ ts: new Date().toISOString(), branch: gitBranch(ws), decision: "turn", gate, routes: routesOf(line) })}\n`, { mode: 0o600 });
+  } catch { /* log hỏng không được ảnh hưởng lượt của người dùng */ }
 }
 
 /** Chạy script trạng thái với payload gốc, workspace đã giải sẵn. */
@@ -96,7 +153,12 @@ const EVENTS = {
     if (!isWorkerRole()) upgradePinnedShim({ crewBin: CREW_BIN });
     stateScript("agent-state-read.mjs", raw, ws);
   },
-  stop: (raw, payload, ws) => stateScript("agent-state-write.mjs", raw, ws),
+  stop: (raw, payload, ws) => {
+    try {
+      logTurnDecision(payload, ws);
+    } catch { /* đo hỏng thì vẫn phải ghi trạng thái phiên */ }
+    stateScript("agent-state-write.mjs", raw, ws);
+  },
   prompt: (raw, payload, ws) => promptGate(payload, ws),
 };
 
