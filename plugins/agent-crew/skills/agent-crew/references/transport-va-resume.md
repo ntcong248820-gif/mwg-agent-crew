@@ -221,8 +221,22 @@ item.updated | item.completed` — **không có** `type: error`. `crew.note` là
 `codex-run.mjs` tự ghi vào stream khi nó giết job, để Monitor thấy được cái chết chứ
 không chỉ thấy im lặng.
 
-`codex-run.mjs` còn tự giết job nào không phát ra event nào trong `--idle-timeout`
-(mặc định 2m). Đó là ca pid chết mà state vẫn đọc là running.
+`codex-run.mjs` còn canh job im: không phát event nào trong `--idle-timeout` (mặc định
+2m) thì nó **hỏi xem Codex còn sống không** trước khi giết (thêm 08/11,
+`scripts/lib/codex-liveness.mjs`). Codex không in gì lúc chờ model, nên im chưa chắc là
+chết — mạng chậm từng làm job đang chờ model bị giết oan. Job còn sống khi một trong:
+
+| Tín hiệu | Nghĩa | Trần |
+| --- | --- | --- |
+| CPU cây tiến trình Codex tăng ≥ 0.2s trong cửa sổ đo | đang chạy lệnh / đang xử lý | `--timeout` |
+| Byte mạng nhận về tăng giữa hai lần `nettop` | model đang trả lời, dù chậm | `--timeout` |
+| Chỉ còn kết nối mạng mở | đang chờ model nghĩ | im tối đa 10 phút |
+
+Còn sống thì sidecar có dòng `crew.note` "im …s nhưng còn sống: <lý do>" và hỏi lại sau
+30s. Chết thì lý do bị giết nêu đủ: `no stdout event for 125s — không dùng CPU, không có
+kết nối mạng`. Đó là ca pid chết mà state vẫn đọc là running. Giới hạn: Codex treo mà vẫn
+nhận byte keepalive trông như còn sống; `--timeout` là chốt cuối. Không cần nâng
+`--idle-timeout` khi mạng chậm nữa.
 
 ## Anti app: báo sớm khi conversation im (thêm 2026-10-03)
 

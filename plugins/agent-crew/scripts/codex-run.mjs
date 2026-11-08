@@ -58,12 +58,19 @@ import {
   codexTurnUsage,
 } from "./crew-guards.mjs";
 import { evidenceHasStatus, runHandoffRescue } from "./codex-handoff-rescue.mjs";
+import { LIVENESS_RECHECK_MS, createLivenessProbe } from "./lib/codex-liveness.mjs";
 import { loadCrewConfig } from "./lib/crew-config.mjs";
 import { assertAccount, listWorkspaceProfiles, resolveWorkspaceProfile, tokenEmail } from "./lib/workspace-cli-profile.mjs";
 // Dời sang crew-guards để anti-run dùng chung; giữ export ở đây cho test và nơi gọi cũ.
 export { resolveLogDir };
 
-/** A job that emits no stdout event for this long is treated as dead, not as thinking. */
+/**
+ * After this long with no stdout event, the watchdog asks codex-liveness whether
+ * the job is still alive (CPU still used by codex or a command it runs, network
+ * bytes still arriving, or a model connection held open for a bounded time).
+ * Only a job silent on every count is killed. Codex prints nothing while it waits on the model, so silence alone
+ * killed jobs that were waiting on a slow network.
+ */
 const DEFAULT_IDLE_MS = 120_000;
 /** Grace between SIGTERM and SIGKILL for the process group. */
 const KILL_GRACE_MS = 5_000;
@@ -732,9 +739,35 @@ export async function codexRun(options) {
       });
     };
 
+    // Silence alone is not death: before killing, ask whether the codex process
+    // tree is burning CPU, still receiving bytes, or holding a model connection
+    // open (capped). Alive → note it, look again later.
+    const liveness = options.liveness ?? createLivenessProbe(child.pid);
+    const recheckMs = options.livenessRecheckMs ?? LIVENESS_RECHECK_MS;
+    let lastEventAt = Date.now();
+    let aliveKind = null;           // what kept the current silent stretch alive, noted once per kind
+    const onIdle = async () => {
+      if (killedFor || settled) return;
+      const verdict = await liveness.check({ silentMs: Date.now() - lastEventAt });
+      // An event may have arrived during the check: armIdle has already re-armed.
+      if (killedFor || settled || Date.now() - lastEventAt < idleMs) return;
+      const silentSec = Math.round((Date.now() - lastEventAt) / 1000);
+      if (verdict.alive) {
+        if (verdict.kind !== aliveKind) {
+          aliveKind = verdict.kind;
+          stream.note(`im ${silentSec}s nhưng còn sống: ${verdict.reason}`);
+        }
+        heartbeat(`silent ${silentSec}s, ${verdict.reason}`);
+        idleTimer = setTimeout(onIdle, recheckMs);
+        return;
+      }
+      kill(`no stdout event for ${silentSec}s — ${verdict.reason}`);
+    };
     const armIdle = () => {
+      lastEventAt = Date.now();
+      aliveKind = null;
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => kill(`no stdout event for ${Math.round(idleMs / 1000)}s`), idleMs);
+      idleTimer = setTimeout(onIdle, idleMs);
     };
 
     const overall = setTimeout(() => {
