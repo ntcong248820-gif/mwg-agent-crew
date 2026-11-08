@@ -32,6 +32,17 @@ case "$FAKE_MODE" in
     exit 0 ;;
   nodrain)      # exits without reading stdin -> EPIPE on a brief over the pipe buffer
     exit 7 ;;
+  silent_command)  # im lâu vì đang chạy một lệnh tốn CPU (như Codex chạy script): không được giết
+    cat > /dev/null
+    printf '{"type":"thread.started","thread_id":"01a04169-2763-79d1-9037-6dc85981fad1"}\n'
+    /bin/sh -c 'yes > /dev/null & p=$!; sleep '"${FAKE_SILENT_SEC:-8}"'; kill $p'
+    printf '{"type":"turn.completed"}\n'
+    printf 'work\n\nStatus: DONE\nSummary: ok\nConcerns/Blockers: none\n' > "$EV"
+    exit 0 ;;
+  silent_dead)  # im, không lệnh nào chạy, không kết nối mạng: treo thật, phải giết
+    cat > /dev/null
+    printf '{"type":"thread.started","thread_id":"01a04169-2763-79d1-9037-6dc85981fad1"}\n'
+    exec sleep 60 ;;
   stderr_only)  # never emits a stdout event: the watchdog must still fire
     while :; do printf 'still working...\n' >&2; sleep 1; done ;;
   blocked)
