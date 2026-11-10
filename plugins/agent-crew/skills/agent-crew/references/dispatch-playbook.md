@@ -160,6 +160,18 @@ Prompt khớp trigger `code`/`research` (mặc định ở `scripts/lib/default-
 repo đè được bằng `routingTriggers` cùng `id`) thì khối đó nói thêm "nghiêng về giao". Vẫn là
 gợi ý: đọc yêu cầu thật rồi quyết, và ghi dòng `Định tuyến: …` trước khi làm.
 
+**Tách việc, đừng chọn một tuyến cho cả việc** (10/11). Đo 08–09/11 ở một repo làm ảnh
+listing: việc nào cũng có một mảng cần nhìn ảnh, nên Claude ghi "tự làm" cho cả việc rồi làm
+luôn phần cơ học — 22/23 lượt ≥10 tool call không giao gì, có lượt 160 tool call. Hỏi từng
+phần: sửa kit/script dựng ảnh, xử lý hàng loạt, chạy cổng kiểm → Codex; chọn ý, duyệt ảnh,
+render cần Chrome → Claude, song song với job. Lý do kiểu "Codex lần trước timeout" không
+phải lý do: lỗi transport thì báo owner, bối cảnh dài thì để vào file trong thư mục run.
+
+Hook PostToolUse đếm lượt gọi tool của lượt đang chạy; tự làm tới 40 tool call hoặc 3 file
+đã sửa mà chưa giao gì (`crew run`, mở session con) thì nhắc một lần, tới 100 nhắc lần cuối.
+Tin app tự chèn (`<task-notification>`, khối nhắc hệ thống) không làm gate bắn và không mở
+lượt mới; tin của session khác vẫn được cân nhắc nhưng không bắt dòng quyết định.
+
 Session con (app mở trong git worktree) cũng nhận khối này: worktree không có
 `crew.config.json` chưa commit thì hook mượn config của repo chính. Session cha **không**
 cần dặn session con "nhớ dùng crew" — dặn thêm chỉ thành lời nhắc trùng.

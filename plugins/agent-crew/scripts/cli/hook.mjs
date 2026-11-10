@@ -3,7 +3,10 @@
  *
  *   session-start  trạng thái phiên khác + bảng crew còn dở   (SessionStart)
  *   stop           ghi trạng thái phiên này                    (Stop)
- *   prompt         routing gate                                (UserPromptSubmit)
+ *   prompt         routing gate + mở bộ đếm nhắc giữa lượt     (UserPromptSubmit)
+ *
+ * PostToolUse (nhắc giữa lượt) không đi qua đây: `bin/crew-hook.sh tool` gọi thẳng
+ * `turn-nudge-hook.mjs` để mỗi lượt gọi tool chỉ tốn một lần khởi động node.
  *
  * Plugin cài cấp máy nên hook bắn ở MỌI repo. Mỗi nhánh tự im khi workspace
  * chưa bật crew: state chỉ ghi khi thư mục state đã có, bảng crew chỉ in khi có
@@ -19,7 +22,8 @@ import { fileURLToPath } from "node:url";
 import { loadCrewConfig } from "../lib/crew-config.mjs";
 import { CONFIG_NAME } from "../lib/crew-layout.mjs";
 import { isWorkerRole } from "../lib/crew-role.mjs";
-import { classify, render } from "../lib/routing-gate.mjs";
+import { classify, promptKind, render } from "../lib/routing-gate.mjs";
+import { endTurn, startTurn } from "../lib/turn-nudge.mjs";
 import { lastTurnDecision, markPending, routesOf, takePending } from "../lib/routing-decision-log.mjs";
 import { workspaceRoot } from "./run-commands.mjs";
 import { upgradePinnedShim } from "./crew-shim.mjs";
@@ -107,15 +111,22 @@ function promptGate(payload, start) {
   if ((payload.hook_event_name ?? "UserPromptSubmit") !== "UserPromptSubmit") return;
   // Worker không điều phối: gợi ý chia việc cho nó là mời nó dispatch tiếp.
   if (isWorkerRole()) return;
+  const prompt = payload.prompt ?? payload.user_prompt ?? "";
+  const kind = promptKind(prompt);
   const ws = crewWorkspace(start);
   if (!optedIn(ws)) return;
   const config = loadCrewConfig(ws);
-  const { branch, hits } = classify(payload.prompt ?? payload.user_prompt ?? "", config);
+  // Bộ đếm nhắc giữa lượt: mở lại ở mỗi việc mới (kể cả "làm hết luôn", gate im);
+  // tin app tự chèn giữa chừng thì giữ bộ đếm của lượt đang chạy.
+  if (kind !== "injected") (config.delegate === "aggressive" ? startTurn : endTurn)(payload.session_id);
+  const { branch, hits } = classify(prompt, config);
   if (branch === "none") return;
   const logPath = gateLogPath(config, ws);
   if (logPath) {
     logFire(logPath, ws, branch, hits);
-    if (branch === "delegate" || branch === "consider") markPending(logPath, payload.session_id, branch);
+    // Tin của session khác vẫn được cân nhắc nhưng không bắt dòng quyết định:
+    // phần lớn là báo cáo trạng thái, bắt ghi thì log toàn `missing`.
+    if ((branch === "delegate" || branch === "consider") && kind === "user") markPending(logPath, payload.session_id, branch);
   }
   process.stdout.write(render(branch, hits));
 }

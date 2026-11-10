@@ -211,7 +211,7 @@ function fire(prompt, { ws = WS, event = "UserPromptSubmit", env = {} } = {}) {
   t.check("wrapper chạy được khi PATH chỉ có /usr/bin:/bin", /internal-link/.test(bare.stdout), true);
   const hooks = JSON.parse(readFileSync(join(MODULE_ROOT, "hooks", "hooks.json"), "utf8")).hooks;
   const cmds = Object.values(hooks).flatMap((groups) => groups.flatMap((g) => g.hooks.map((h) => h.command)));
-  t.check("hooks.json đăng ký đủ 3 sự kiện", Object.keys(hooks).sort().join(","), "SessionStart,Stop,UserPromptSubmit");
+  t.check("hooks.json đăng ký đủ 4 sự kiện", Object.keys(hooks).sort().join(","), "PostToolUse,SessionStart,Stop,UserPromptSubmit");
   t.check("mọi hook đi qua wrapper, không gọi thẳng node", cmds.every((c) => c.includes("${CLAUDE_PLUGIN_ROOT}/bin/crew-hook.sh") && !/^node /.test(c)), true);
   t.check("wrapper có quyền chạy", execFileSync("stat", ["-f", "%Lp", HOOK_SH], { encoding: "utf8" }).trim(), "755");
 }
