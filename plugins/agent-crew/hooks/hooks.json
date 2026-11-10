@@ -1,5 +1,5 @@
 {
-  "description": "agent-crew: trạng thái phiên khác + crew còn dở lúc mở phiên, ghi trạng thái lúc dừng, routing gate trên prompt. Im lặng ở repo chưa bật crew.",
+  "description": "agent-crew: trạng thái phiên khác + crew còn dở lúc mở phiên, ghi trạng thái lúc dừng, routing gate trên prompt, nhắc giữa lượt khi tự làm quá dài. Im lặng ở repo chưa bật crew.",
   "hooks": {
     "SessionStart": [
       {
@@ -10,6 +10,11 @@
     "UserPromptSubmit": [
       {
         "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/crew-hook.sh\" prompt", "timeout": 10 }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/crew-hook.sh\" tool", "timeout": 5 }]
       }
     ],
     "Stop": [

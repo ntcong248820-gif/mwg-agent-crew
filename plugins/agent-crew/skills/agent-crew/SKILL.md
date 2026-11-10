@@ -6,7 +6,7 @@ when_to_use: "Trigger: giao việc, chia việc, chạy song song, nhờ Codex, 
 category: agent-ops
 keywords: [crew, dispatch, multi-agent, song-song, codex, antigravity, worker]
 metadata:
-  version: "2.5.0"
+  version: "2.6.0"
 ---
 
 # agent-crew
@@ -107,7 +107,7 @@ BRIEF        = mềm 2 KB (vẫn chạy, cờ BRIEF DÀI) / cứng 8 KB (adapter
 | Câu hỏi | Nếu đúng |
 | --- | --- |
 | Owner gõ `@anti`/`@codex`, hay chat với worker? | Miễn luật ≥2 đầu việc; đọc `references/phoi-hop-owner.md`. |
-| Repo khai `delegate: "aggressive"` (`crew doctor` dòng `delegate`)? | Miễn luật ≥2 đầu việc cho việc **code** (→ Codex `--role owner --tier code`, ước > 30m thì `--chain`) và **research**/việc có rule (→ Anti `--tier standard`). Tự làm khi ước < ~10 lượt gọi tool **và** < 3 file, hoặc cần quyết nghiệp vụ giữa chừng — nói lý do một câu. |
+| Repo khai `delegate: "aggressive"` (`crew doctor` dòng `delegate`)? | Miễn luật ≥2 đầu việc. **Tách việc thành phần, hỏi từng phần** — mọi loại việc, cả làm hình/video: phần code/script/xử lý hàng loạt → Codex `--role owner --tier code` (ước > 30m thì `--chain`); research/việc có rule → Anti `--tier standard`; Claude giữ phần cần nhìn và phán đoán, phần cần công cụ worker không có, và nghiệm thu — chạy song song với job. Tự làm hết chỉ khi cả việc < ~10 lượt gọi tool **và** < 3 file, hoặc không phần nào tách được — nói lý do một câu. Worker từng lỗi không phải lý do bỏ giao. |
 | Định giao nhiều job hoặc job dài cho một worker? | `crew quota` trước (~5s, không tốn token). Nhóm quota của bậc định dùng còn < 10% → chia sang worker kia, bậc khác (Anti: Gemini và Claude/GPT là hai nhóm riêng), hoặc tự làm. |
 | Request chỉ có 1 đầu việc? | Làm trực tiếp. Không tạo run. |
 | Mỗi đầu việc xử lý dưới ~30s? | Gom lại thành 1 job. Mở `agy` tốn 5.5s/lần. |
@@ -120,8 +120,10 @@ Chi tiết cách phân rã: `references/dispatch-playbook.md`.
 Hook của plugin có thể đã chèn khối "Định tuyến crew" vào đầu lượt. Đó là **gợi ý**, không
 phải lệnh: đọc yêu cầu thật rồi tự quyết theo bảng trên. Repo aggressive chèn khối này ở
 **mọi** prompt là việc (không chỉ khi khớp từ khoá) và bắt câu đầu trả lời ghi đúng một dòng
-`Định tuyến: giao Codex | giao Anti | chia session con | tự làm — <lý do>`; câu hỏi hay xác
-nhận thì bỏ dòng này. Hook Stop đọc dòng đó ghi tuyến vào `.crew/logs/routing-gate.jsonl`
+`Định tuyến: Codex: <phần> · Anti: <phần> · tự làm: <phần> — <lý do>` (bỏ phần không có) hoặc
+`Định tuyến: tự làm hết — <vì sao không tách được>`; câu hỏi hay xác nhận thì bỏ dòng này.
+Lượt tự làm phình tới 40 lượt gọi tool hoặc 3 file đã sửa thì hook nhắc giữa lượt (tối đa hai
+lần, lần hai ở 100): cân nhắc giao phần **còn lại**, hoặc ghi `Định tuyến: vẫn tự làm — <lý do>`. Hook Stop đọc dòng đó ghi tuyến vào `.crew/logs/routing-gate.jsonl`
 (không ghi nội dung) để đo giao thừa/thiếu: quên ghi là log thành `missing`.
 
 ## Input từ một job list có sẵn — TÙY CHỌN

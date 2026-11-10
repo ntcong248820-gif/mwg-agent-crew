@@ -8,4 +8,6 @@ NODE="$(command -v node 2>/dev/null)"
 done
 [ -n "$NODE" ] && [ -x "$NODE" ] || exit 0
 PATH="$(dirname "$NODE"):$PATH"; export PATH
+# PostToolUse bắn ở mọi lượt gọi tool: đi đường riêng, chỉ nạp module nhắc giữa lượt.
+[ "$1" = tool ] && exec "$NODE" "$(dirname "$0")/../scripts/cli/turn-nudge-hook.mjs"
 exec "$NODE" "$(dirname "$0")/crew.mjs" hook "$@"

@@ -12,7 +12,7 @@
  */
 import { closeSync, existsSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DECISION_LABEL } from "./routing-gate.mjs";
+import { DECISION_LABEL, promptKind, stripReminders } from "./routing-gate.mjs";
 
 /** Transcript dài cả chục MB; lượt cuối luôn nằm ở đuôi. */
 const TAIL_BYTES = 4 * 1024 * 1024;
@@ -51,16 +51,20 @@ export function takePending(logPath, sessionId) {
 }
 
 /**
- * Dòng quyết định → danh sách tuyến. "giao Codex phần A, tự làm B" → ["codex"]:
- * có giao là tính giao; "tự làm" chỉ đứng một mình mới là self.
+ * Dòng quyết định → danh sách tuyến. Chỉ đọc phần trước lý do (trước " — ", không
+ * có gạch thì trước dấu chấm đầu): "tự làm — Codex đã timeout" là self, không phải
+ * codex. "Codex: parser · tự làm: doc" → ["codex"]: có giao là tính giao; "tự làm"
+ * chỉ đứng một mình mới là self.
  */
 export function routesOf(line) {
   if (!line) return ["missing"];
+  const parts = line.split(/\s[—–]\s/);
+  const head = parts.length > 1 ? parts[0] : line.split(/\.\s/)[0];
   const routes = [];
-  if (/codex/i.test(line)) routes.push("codex");
-  if (/\banti\b|antigravity/i.test(line)) routes.push("anti");
-  if (/session\s*con|phiên\s*con|sub-?session/i.test(line)) routes.push("session");
-  if (!routes.length && /tự\s*làm|tu\s*lam/i.test(line)) routes.push("self");
+  if (/codex/i.test(head)) routes.push("codex");
+  if (/\banti\b|antigravity/i.test(head)) routes.push("anti");
+  if (/session\s*con|phiên\s*con|sub-?session/i.test(head)) routes.push("session");
+  if (!routes.length && /tự\s*làm|tu\s*lam/i.test(head)) routes.push("self");
   return routes.length ? routes : ["other"];
 }
 
@@ -79,12 +83,22 @@ function tailLines(path) {
   return lines;
 }
 
-/** Lượt người dùng thật: không phải meta, không phải kết quả tool. */
+/**
+ * Mốc đầu lượt: tin mang việc mới. Không tính tin app tự chèn — khối nhắc hệ thống
+ * trơn, `<task-notification>`, tin của session khác (isMeta), bản tóm tắt sau khi
+ * nén ngữ cảnh, "[Request interrupted…]". Đo 08–09/11: các tin đó bị coi là prompt
+ * nên dòng quyết định viết trước chúng bị bỏ sót, log đếm `missing` 77/92 lượt.
+ * Tin session cha giao việc lúc mở session con là việc thật, vẫn tính.
+ */
 function isUserPrompt(e) {
-  if (e?.type !== "user" || e.isMeta) return false;
+  if (e?.type !== "user" || e.isMeta || e.isCompactSummary) return false;
   const c = e.message?.content;
-  if (typeof c === "string") return true;
-  return Array.isArray(c) && c.some((b) => b?.type === "text") && !c.some((b) => b?.type === "tool_result");
+  let text;
+  if (typeof c === "string") text = c;
+  else if (Array.isArray(c) && !c.some((b) => b?.type === "tool_result")) text = c.filter((b) => b?.type === "text").map((b) => b.text).join("\n");
+  else return false;
+  if (promptKind(text) !== "user") return false;
+  return !/^(This session is being continued from a previous conversation|\[Request interrupted)/.test(stripReminders(text));
 }
 
 /** Dòng `Định tuyến: …` đầu tiên Claude viết từ prompt cuối tới hết transcript, hoặc null. */

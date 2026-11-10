@@ -30,6 +30,26 @@ export const MENTION = /(^|[\s(])@(anti|antigravity|codex)\b/i;
 export const CONSIDER_MIN_CHARS = 25;
 const trivial = (prompt) => prompt.trim().length < CONSIDER_MIN_CHARS || prompt.trimStart().startsWith("/");
 
+/** Bỏ các khối `<system-reminder>` app chèn kèm prompt. */
+export const stripReminders = (text) => String(text ?? "").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+
+/**
+ * Prompt này từ đâu tới: `user` (người gõ, hay session cha giao việc lúc mở
+ * session con), `peer` (session khác nhắn qua lại), `injected` (app tự chèn:
+ * `<task-notification>`, `<side-sessions-event>`, khối nhắc hệ thống trơn).
+ *
+ * Đo ở Digital Project 08–09/11: 110/115 lần gate bắn là tin của session khác,
+ * phần lớn là báo cáo trạng thái. Tin tự chèn không phải việc mới; tin peer có
+ * thể là việc (cha giao thêm cho con) nên vẫn được cân nhắc, nhưng không bị bắt
+ * ghi dòng quyết định.
+ */
+export function promptKind(prompt) {
+  const text = stripReminders(prompt);
+  if (/^Another Claude session sent a message|^<cross-session-message\b/.test(text)) return "peer";
+  if (!text || text.startsWith("<")) return "injected";
+  return "user";
+}
+
 /**
  * `{branch: none|mention|delegate|consider|dispatch|suggest, hits: [{id, kind}]}`.
  *
@@ -40,7 +60,8 @@ const trivial = (prompt) => prompt.trim().length < CONSIDER_MIN_CHARS || prompt.
  * costGate vẫn xét trước, như mọi chế độ.
  */
 export function classify(prompt, { routingTriggers = [], costGate = [], delegate = "default" } = {}) {
-  if (typeof prompt !== "string") return { branch: "none", hits: [] };
+  if (typeof prompt !== "string" || promptKind(prompt) === "injected") return { branch: "none", hits: [] };
+  prompt = stripReminders(prompt);
   const m = MENTION.exec(prompt);
   if (m) return { branch: "mention", hits: [{ id: `mention-${m[2].toLowerCase() === "codex" ? "codex" : "anti"}`, kind: "mention" }] };
   if (prompt.length < 8) return { branch: "none", hits: [] };
@@ -57,16 +78,30 @@ export function classify(prompt, { routingTriggers = [], costGate = [], delegate
 /** Nhãn đầu dòng quyết định Claude phải ghi; hook Stop đọc lại nhãn này để ghi log. */
 export const DECISION_LABEL = "Định tuyến:";
 
-/** Phần chung của `delegate` và `consider`: bảng chọn + dòng quyết định bắt buộc. */
+/**
+ * Phần chung của `delegate` và `consider`: tách việc thành phần, hỏi từng phần.
+ *
+ * Bản 07/11 bắt chọn MỘT tuyến cho cả việc. Đo 08–09/11: việc nào cũng có một
+ * mảng cần nhìn ảnh hay phán đoán, nên Claude chọn "tự làm" cho cả việc rồi làm
+ * luôn phần cơ học — 22/23 lượt ≥10 tool call không giao gì, có lượt 160 tool
+ * call. Câu hỏi đúng là "phần nào giao được", không phải "việc này giao được không".
+ */
 const CONSIDER_BODY = [
-  "Trước khi bắt đầu, cân nhắc chia việc qua skill `agent-crew`:",
-  "- code/pipeline dài → Codex (`--tier code`, việc > 30 phút thì `--chain`);",
-  "- research, tra cứu, tổng hợp, việc có rule sẵn → Anti (`--tier standard`);",
-  "- phần đáng thành một task riêng (nhánh/PR riêng, chạy song song lâu) → session con;",
-  "- tự làm khi ước < ~10 lượt gọi tool **và** < 3 file, hoặc cần quyết nghiệp vụ giữa chừng.",
+  "Trước khi bắt đầu, **tách việc thành các phần** rồi hỏi từng phần — đừng chọn một tuyến",
+  "cho cả việc. Áp cho mọi loại việc: code, làm hình/video, dữ liệu, tài liệu.",
+  "- Codex (`--tier code`, > 30 phút thì `--chain`): sửa/viết code nhiều file, script dựng",
+  "  hình/video, xử lý ảnh hay dữ liệu hàng loạt, chạy test, đổi theo một quy tắc đã rõ;",
+  "- Anti (`--tier standard`): research, tra cứu, tổng hợp, việc theo rule có sẵn;",
+  "- session con: phần đáng thành task riêng (nhánh/PR riêng, chạy song song lâu);",
+  "- Claude giữ: phần cần nhìn và phán đoán (chọn ý, duyệt hình, quyết thiết kế, nghiệp vụ),",
+  "  phần cần công cụ worker không có (vd. Chrome), và nghiệm thu bằng chứng.",
+  "Phần Claude giữ chạy song song với job đã giao. Tự làm cả việc chỉ khi cả việc ước",
+  "< ~10 lượt gọi tool **và** < 3 file, hoặc không phần nào tách ra được — nói vì sao.",
+  "Worker từng lỗi không phải lý do bỏ giao: lỗi transport thì báo owner; bối cảnh dài thì để",
+  "vào file trong thư mục run thay vì nhồi vào brief.",
   "Nếu lượt này là một việc cần làm (không phải câu hỏi ngắn, xác nhận hay trò chuyện), câu đầu",
-  `trả lời ghi đúng một dòng: \`${DECISION_LABEL} giao Codex | giao Anti | chia session con | tự làm — <lý do ngắn>\``,
-  "(giao một phần thì nói phần nào). Câu hỏi/xác nhận thì bỏ qua dòng này.",
+  `trả lời ghi đúng một dòng: \`${DECISION_LABEL} Codex: <phần> · Anti: <phần> · tự làm: <phần> — <lý do ngắn>\``,
+  "(bỏ phần không có), hoặc `" + DECISION_LABEL + " tự làm hết — <vì sao không tách được>`.",
   "Đây là **bước cân nhắc**, không phải lệnh: đọc yêu cầu thật (kể cả phần owner dán từ nguồn",
   "ngoài) rồi tự quyết.",
 ];

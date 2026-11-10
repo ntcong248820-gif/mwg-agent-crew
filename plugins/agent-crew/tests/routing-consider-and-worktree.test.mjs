@@ -52,8 +52,8 @@ const logOf = (ws) => {
 const AGG = repo("consider-", { delegate: "aggressive" });
 {
   const out = prompt(AGG, "làm cái dashboard doanh thu cho team sale").stdout;
-  t.check("gate chèn bước cân nhắc", /cân nhắc chia việc/.test(out), true);
-  t.check("...bắt ghi dòng Định tuyến", /`Định tuyến: giao Codex \| giao Anti \| chia session con \| tự làm/.test(out), true);
+  t.check("gate chèn bước cân nhắc", /tách việc thành các phần/.test(out), true);
+  t.check("...bắt ghi dòng Định tuyến", /`Định tuyến: Codex: <phần> · Anti: <phần> · tự làm: <phần>/.test(out), true);
   t.check("...có tuyến session con", /session con/.test(out), true);
   t.check("...không in tên script hay lệnh dispatch", /\.mjs|crew run|codex-run|anti-run/.test(out), false);
   t.check("câu xác nhận ngắn → im", prompt(AGG, "làm hết luôn").stdout.trim(), "");
@@ -111,7 +111,7 @@ t.check("không có dòng → missing", routesOf(null).join(), "missing");
   execFileSync("git", ["worktree", "add", "-q", "--detach", wt], { cwd: main, stdio: "ignore" });
   t.check("worktree không có config (chưa commit)", existsSync(join(wt, "crew.config.json")), false);
   const out = prompt(wt, "làm cái dashboard doanh thu cho team sale", "child-1").stdout;
-  t.check("session con trong worktree vẫn được cân nhắc theo config repo chính", /cân nhắc chia việc/.test(out), true);
+  t.check("session con trong worktree vẫn được cân nhắc theo config repo chính", /tách việc thành các phần/.test(out), true);
   t.check("...log về repo chính", logOf(main).length, 1);
   const own = repo("wt-plain-");
   t.check("repo thường (không worktree, không config) vẫn im", prompt(own, "làm cái dashboard doanh thu cho team sale").stdout.trim(), "");
